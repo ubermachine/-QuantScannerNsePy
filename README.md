@@ -26,6 +26,12 @@ Data is fetched from Yahoo Finance on-demand within the app:
 - **Sector page** — Sector-level data has its own sync button
 - Data is stored locally in a DuckDB database (`database/quantscanner.duckdb`)
 
+### Cold start
+
+On first clone, the repo includes pre-exported **Parquet** files (`database/*.parquet`).
+When the app runs and finds no DuckDB file, it automatically creates one from the
+Parquet data — no immediate sync needed. Sync any time to get fresh data.
+
 > If the app loads slowly on first run, use the sync buttons in each page to populate the database.
 
 ## Project Structure
@@ -39,7 +45,7 @@ pages_app/
   sector.py             # Sector Rotation (RRG)
   backtest.py           # Portfolio Simulation
   chart.py              # Chart Analysis
-database/               # DuckDB database (auto-generated, not tracked in git)
+database/               # Parquet files (tracked in git) + DuckDB (auto-generated)
 .streamlit/
   config.toml           # Streamlit config (headless mode, no usage stats)
 ```

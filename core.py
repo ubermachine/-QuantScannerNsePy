@@ -10,8 +10,69 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 DB = os.path.join(_HERE, "database", "quantscanner.duckdb")
 NIFTY_TICKER = "^NSEI"
 
+# Parquet fallback paths — stored in git, used when DuckDB is missing
+_PARQUET_DIR = os.path.join(_HERE, "database")
+_PARQUET_TABLES = {
+    "DailyBars": os.path.join(_PARQUET_DIR, "DailyBars.parquet"),
+    "WeeklyBars": os.path.join(_PARQUET_DIR, "WeeklyBars.parquet"),
+    "StockMetadatas": os.path.join(_PARQUET_DIR, "StockMetadatas.parquet"),
+    "SectorDailyBars": os.path.join(_PARQUET_DIR, "SectorDailyBars.parquet"),
+}
+_db_initialized = False
+
+
+def _ensure_db():
+    """If DuckDB file doesn't exist, recreate it from Parquet files (shipped in git)."""
+    if os.path.exists(DB):
+        return
+    if not os.path.isdir(_PARQUET_DIR):
+        return
+    pq_files = [f for f in os.listdir(_PARQUET_DIR) if f.endswith(".parquet")]
+    if not pq_files:
+        return
+    con = duckdb.connect(DB)
+    try:
+        for f in pq_files:
+            table = f.replace(".parquet", "")
+            path = os.path.join(_PARQUET_DIR, f).replace("\\", "/")
+            con.execute(f"CREATE TABLE IF NOT EXISTS \"{table}\" AS SELECT * FROM read_parquet('{path}')")
+        con.commit()
+    finally:
+        con.close()
+
+
+def _export_parquet(con=None):
+    """Export all DuckDB tables to Parquet files (Zstd compressed) for git distribution.
+    If con is given, reuse it; otherwise create a temporary connection."""
+    close_con = False
+    if con is None:
+        con = duckdb.connect(DB)
+        close_con = True
+    try:
+        for table, path in _PARQUET_TABLES.items():
+            # Check if table exists and has data
+            exists = con.execute(
+                "SELECT count(*) FROM information_schema.tables WHERE table_name = ? AND table_type = 'BASE TABLE'",
+                [table]
+            ).fetchone()[0]
+            if not exists:
+                continue
+            cnt = con.execute(f"SELECT count(*) FROM \"{table}\"").fetchone()[0]
+            if cnt == 0:
+                continue
+            con.execute(
+                f"COPY \"{table}\" TO '{path.replace('\\', '/')}' (FORMAT PARQUET, CODEC 'ZSTD', COMPRESSION_LEVEL 22)"
+            )
+    finally:
+        if close_con:
+            con.close()
+
 
 def _conn():
+    global _db_initialized
+    if not _db_initialized:
+        _ensure_db()
+        _db_initialized = True
     return duckdb.connect(DB)
 
 
@@ -1128,6 +1189,11 @@ def sync_yahoo_data() -> dict:
             continue
 
     con.commit()
+    # Export updated tables to Parquet for git distribution
+    try:
+        _export_parquet(con=con)
+    except Exception:
+        pass  # Non-critical; sync succeeded either way
     con.close()
     return {"status": "completed", "synced": synced, "errors": errors, "total": len(tickers) + 1}
 
@@ -1180,6 +1246,11 @@ def sync_sector_data(period: str = "5y") -> dict:
             continue
 
     con.commit()
+    # Export updated sector tables to Parquet for git distribution
+    try:
+        _export_parquet(con=con)
+    except Exception:
+        pass  # Non-critical; sync succeeded either way
     con.close()
     return {
         "status": "completed",
