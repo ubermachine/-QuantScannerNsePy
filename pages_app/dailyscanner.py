@@ -10,6 +10,63 @@ from indicators import *
 import numpy as np
 
 
+@st.dialog("📈 Chart")
+def chart_dialog(ticker):
+    st.caption(f"**{ticker}** — Candlestick with EMA 8/21, JNSAR, MACD")
+    with st.spinner(f"Loading chart for {ticker}..."):
+        chart_data = get_stock_chart(ticker, 150)
+
+    if "error" in chart_data or not chart_data.get("candles"):
+        st.error(chart_data.get("error", "No chart data available"))
+    else:
+        candles = chart_data["candles"]
+        fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.7, 0.3])
+
+        fig.add_trace(go.Candlestick(
+            x=[c["date"] for c in candles], open=[c["open"] for c in candles],
+            high=[c["high"] for c in candles], low=[c["low"] for c in candles],
+            close=[c["close"] for c in candles], name=ticker,
+        ), row=1, col=1)
+
+        fig.add_trace(go.Scatter(x=[c["date"] for c in candles], y=[c["ema8"] for c in candles],
+            mode="lines", name="EMA 8", line=dict(color="#636efa", width=1)), row=1, col=1)
+        fig.add_trace(go.Scatter(x=[c["date"] for c in candles], y=[c["ema21"] for c in candles],
+            mode="lines", name="EMA 21", line=dict(color="#ef553b", width=1)), row=1, col=1)
+
+        jnsar_vals = [c["jnsar"] for c in candles]
+        fig.add_trace(go.Scatter(x=[c["date"] for c in candles], y=jnsar_vals,
+            mode="lines", name="JNSAR", line=dict(color="#ffa15a", width=1, dash="dot")), row=1, col=1)
+
+        dates_m = [c["date"] for c in candles]
+        macd_l = [c["macd_line"] for c in candles]
+        macd_s = [c["macd_signal"] for c in candles]
+        macd_h = [c["macd_histogram"] for c in candles]
+        colors = ["#00cc96" if h >= 0 else "#ef553b" for h in macd_h]
+        fig.add_trace(go.Bar(x=dates_m, y=macd_h, name="MACD Hist", marker_color=colors), row=2, col=1)
+        fig.add_trace(go.Scatter(x=dates_m, y=macd_l, mode="lines", name="MACD Line",
+            line=dict(color="#636efa", width=1)), row=2, col=1)
+        fig.add_trace(go.Scatter(x=dates_m, y=macd_s, mode="lines", name="Signal",
+            line=dict(color="#ef553b", width=1)), row=2, col=1)
+
+        fig.update_layout(height=500, xaxis_rangeslider_visible=False,
+                          template="plotly_dark", hovermode="x unified")
+        fig.update_yaxes(title_text="Price", row=1, col=1)
+        fig.update_yaxes(title_text="MACD", row=2, col=1)
+
+        st.plotly_chart(fig, use_container_width=True)
+
+        last = candles[-1]
+        mcol1, mcol2, mcol3, mcol4 = st.columns(4)
+        mcol1.metric("Close", last["close"])
+        mcol2.metric("High", last["high"])
+        mcol3.metric("Low", last["low"])
+        mcol4.metric("Volume", f"{last['volume']:,}")
+
+    if st.button("✕ Close"):
+        st.session_state.chart_ticker = None
+        st.rerun()
+
+
 def _scan_ticker(closes, highs, lows, vols, dates, opens=None):
     """Run all 4 daily strategies on one ticker. Returns dict of signals or None."""
     price = float(closes[-1])
@@ -177,61 +234,6 @@ def show():
                           if (r := _scan_ticker(closes, highs, lows, vols, dates)) and r[key] != "NONE")
                 col.metric(label, cnt)
 
-    # Chart modal — shown when a ticker is selected
+    # Open chart popup when a ticker is selected
     if st.session_state.chart_ticker:
-        ticker = st.session_state.chart_ticker
-        with st.container(border=True):
-            hcol1, hcol2 = st.columns([6, 1])
-            hcol1.subheader(f"📈 {ticker}")
-            if hcol2.button("✕ Close", type="primary"):
-                st.session_state.chart_ticker = None
-                st.rerun()
-
-            with st.spinner(f"Loading chart for {ticker}..."):
-                chart_data = get_stock_chart(ticker, 150)
-
-            if "error" in chart_data or not chart_data.get("candles"):
-                st.error(chart_data.get("error", "No chart data available"))
-            else:
-                candles = chart_data["candles"]
-                fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.7, 0.3])
-
-                fig.add_trace(go.Candlestick(
-                    x=[c["date"] for c in candles], open=[c["open"] for c in candles],
-                    high=[c["high"] for c in candles], low=[c["low"] for c in candles],
-                    close=[c["close"] for c in candles], name=ticker,
-                ), row=1, col=1)
-
-                fig.add_trace(go.Scatter(x=[c["date"] for c in candles], y=[c["ema8"] for c in candles],
-                    mode="lines", name="EMA 8", line=dict(color="#636efa", width=1)), row=1, col=1)
-                fig.add_trace(go.Scatter(x=[c["date"] for c in candles], y=[c["ema21"] for c in candles],
-                    mode="lines", name="EMA 21", line=dict(color="#ef553b", width=1)), row=1, col=1)
-
-                jnsar_vals = [c["jnsar"] for c in candles]
-                fig.add_trace(go.Scatter(x=[c["date"] for c in candles], y=jnsar_vals,
-                    mode="lines", name="JNSAR", line=dict(color="#ffa15a", width=1, dash="dot")), row=1, col=1)
-
-                dates_m = [c["date"] for c in candles]
-                macd_l = [c["macd_line"] for c in candles]
-                macd_s = [c["macd_signal"] for c in candles]
-                macd_h = [c["macd_histogram"] for c in candles]
-                colors = ["#00cc96" if h >= 0 else "#ef553b" for h in macd_h]
-                fig.add_trace(go.Bar(x=dates_m, y=macd_h, name="MACD Hist", marker_color=colors), row=2, col=1)
-                fig.add_trace(go.Scatter(x=dates_m, y=macd_l, mode="lines", name="MACD Line",
-                    line=dict(color="#636efa", width=1)), row=2, col=1)
-                fig.add_trace(go.Scatter(x=dates_m, y=macd_s, mode="lines", name="Signal",
-                    line=dict(color="#ef553b", width=1)), row=2, col=1)
-
-                fig.update_layout(height=500, xaxis_rangeslider_visible=False,
-                                  template="plotly_dark", hovermode="x unified")
-                fig.update_yaxes(title_text="Price", row=1, col=1)
-                fig.update_yaxes(title_text="MACD", row=2, col=1)
-
-                st.plotly_chart(fig, use_container_width=True)
-
-                last = candles[-1]
-                mcol1, mcol2, mcol3, mcol4 = st.columns(4)
-                mcol1.metric("Close", last["close"])
-                mcol2.metric("High", last["high"])
-                mcol3.metric("Low", last["low"])
-                mcol4.metric("Volume", f"{last['volume']:,}")
+        chart_dialog(st.session_state.chart_ticker)
