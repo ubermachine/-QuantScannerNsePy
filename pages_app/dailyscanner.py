@@ -1,9 +1,11 @@
 """Daily Scanner — 4 mechanical daily-chart strategies: JNSAR, J10SAR, MA Crossover, LRHR."""
 import streamlit as st
 import pandas as pd
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-from core import _batch_load_all, _load_nifty, _conn
+from core import _batch_load_all, _load_nifty, _conn, get_stock_chart
 from indicators import *
 import numpy as np
 
@@ -66,6 +68,7 @@ def _scan_ticker(closes, highs, lows, vols, dates, opens=None):
 
 
 def show():
+    st.session_state.setdefault("chart_ticker", None)
     st.title("📅 Daily Scanner")
     st.caption("4 mechanical daily-chart strategies: JNSAR, J10SAR, MA Crossover (8/21×144), LRHR 61.8%")
 
@@ -81,68 +84,154 @@ def show():
             all_data = _batch_load_all(min_bars=200, lookback=250)
             if not all_data:
                 st.error("No data available. Run sync from Scan Dashboard first.")
-                return
+                st.session_state.daily_results = None
 
-        con = _conn()
-        stocks = con.execute("SELECT Ticker, Sector FROM StockMetadatas").fetchall()
-        sectors = {r[0]: r[1] or "NSE" for r in stocks}
-        con.close()
+        if all_data:
+            con = _conn()
+            stocks = con.execute("SELECT Ticker, Sector FROM StockMetadatas").fetchall()
+            sectors = {r[0]: r[1] or "NSE" for r in stocks}
+            con.close()
 
-        rows = []
-        for ticker, (closes, highs, lows, vols, dates) in all_data.items():
-            opens = np.concatenate([[closes[0]], closes[:-1]])
-            result = _scan_ticker(closes, highs, lows, vols, dates)
-            if result is None:
-                continue
-            sector = sectors.get(ticker, "NSE")
+            rows = []
+            for ticker, (closes, highs, lows, vols, dates) in all_data.items():
+                opens = np.concatenate([[closes[0]], closes[:-1]])
+                result = _scan_ticker(closes, highs, lows, vols, dates)
+                if result is None:
+                    continue
+                sector = sectors.get(ticker, "NSE")
 
-            sig_map = {"JNSAR (S&R)": result["jnsar_sig"], "J10SAR": result["j10_sig"],
-                        "MA Crossover": result["ma_sig"], "LRHR (61.8%)": result["lrhr_sig"]}
-            sig = sig_map.get(strategy_tab, "NONE")
-            if sig == "NONE":
-                continue
+                sig_map = {"JNSAR (S&R)": result["jnsar_sig"], "J10SAR": result["j10_sig"],
+                            "MA Crossover": result["ma_sig"], "LRHR (61.8%)": result["lrhr_sig"]}
+                sig = sig_map.get(strategy_tab, "NONE")
+                if sig == "NONE":
+                    continue
 
-            row = {"Ticker": ticker.replace(".NS", ""), "Sector": sector, "Price": result["price"],
-                   "Signal": sig, "SL": result["sl_long"] if sig == "LONG" else result["sl_short"],
-                   "A TR": result["atr14"]}
+                row = {"Ticker": ticker.replace(".NS", ""), "Sector": sector, "Price": result["price"],
+                       "Signal": sig, "SL": result["sl_long"] if sig == "LONG" else result["sl_short"],
+                       "ATR": result["atr14"]}
 
-            if strategy_tab == "JNSAR (S&R)":
-                row["JNSAR"] = result["jnsar"]
-            elif strategy_tab == "J10SAR":
-                row["Mid"], row["Upper"], row["Lower"] = result["j10_mid"], result["j10_upper"], result["j10_lower"]
-            elif strategy_tab == "MA Crossover":
-                row["EMA8"], row["EMA21"], row["EMA144"] = result["ema8"], result["ema21"], result["ema144"]
-            elif strategy_tab == "LRHR (61.8%)":
-                row["Golden Z"], row["Swing H"], row["Swing L"] = result["golden_zone"], result["swing_h"], result["swing_l"]
-            rows.append(row)
+                if strategy_tab == "JNSAR (S&R)":
+                    row["JNSAR"] = result["jnsar"]
+                elif strategy_tab == "J10SAR":
+                    row["Mid"], row["Upper"], row["Lower"] = result["j10_mid"], result["j10_upper"], result["j10_lower"]
+                elif strategy_tab == "MA Crossover":
+                    row["EMA8"], row["EMA21"], row["EMA144"] = result["ema8"], result["ema21"], result["ema144"]
+                elif strategy_tab == "LRHR (61.8%)":
+                    row["GoldenZ"], row["SwingH"], row["SwingL"] = result["golden_zone"], result["swing_h"], result["swing_l"]
+                rows.append(row)
 
-        if dir_filter != "All":
-            rows = [r for r in rows if r["Signal"] == dir_filter]
+            if dir_filter != "All":
+                rows = [r for r in rows if r["Signal"] == dir_filter]
 
-        if not rows:
-            st.info(f"No {strategy_tab} signals currently. Try another strategy tab.")
-            return
-
-        df = pd.DataFrame(rows).sort_values("Ticker")
-        st.success(f"{len(df)} {strategy_tab} signals found")
-
-        col_config = {"Price": st.column_config.NumberColumn(format="%.2f"),
-                      "SL": st.column_config.NumberColumn(format="%.2f"),
-                      "A TR": st.column_config.NumberColumn(format="%.2f")}
-        for extra in ["JNSAR", "Mid", "Upper", "Lower", "EMA8", "EMA21", "EMA144",
-                       "Golden Z", "Swing H", "Swing L"]:
-            if extra in df.columns:
-                col_config[extra] = st.column_config.NumberColumn(format="%.2f")
-        st.dataframe(df, use_container_width=True, height=500, column_config=col_config)
-
-        # Summary counts
-        st.divider()
-        st.caption("Signal counts across all strategies:")
-        c1, c2, c3, c4 = st.columns(4)
-        for col, label, key in [(c1, "JNSAR", "jnsar_sig"), (c2, "J10SAR", "j10_sig"),
-                                 (c3, "MA Xover", "ma_sig"), (c4, "LRHR", "lrhr_sig")]:
-            cnt = sum(1 for _, (closes, highs, lows, vols, dates) in all_data.items()
-                      if (r := _scan_ticker(closes, highs, lows, vols, dates)) and r[key] != "NONE")
-            col.metric(label, cnt)
+            if not rows:
+                st.info(f"No {strategy_tab} signals currently. Try another strategy tab.")
+                st.session_state.daily_results = None
+            else:
+                st.success(f"{len(rows)} {strategy_tab} signals found")
+                st.session_state.daily_results = rows
+                st.session_state.daily_all_data = all_data
     else:
         st.info("Select a strategy and click **Run Daily Scan** to scan all stocks for signals.")
+
+    # Results table (rendered from session state, outside the if block)
+    if st.session_state.get("daily_results"):
+        rows = st.session_state.daily_results
+        # Determine extra columns present in the data
+        extra_cols = [k for k in ["JNSAR", "Mid", "Upper", "Lower", "EMA8", "EMA21", "EMA144",
+                                   "GoldenZ", "SwingH", "SwingL"] if k in rows[0]]
+
+        col_widths = [2, 1.2, 1.2, 1, 1, 1] + [1] * len(extra_cols) + [0.6]
+        headers = ["Ticker", "Sector", "Price", "Signal", "SL", "ATR"] + extra_cols + [""]
+
+        h = st.columns(col_widths)
+        for c, lbl in zip(h, headers):
+            c.markdown(f"**{lbl}**")
+
+        for r in rows:
+            c = st.columns(col_widths)
+            ticker = r["Ticker"]
+            c[0].write(ticker)
+            c[1].write(r["Sector"])
+            c[2].write(f"{r['Price']:.2f}")
+            c[3].write(r["Signal"])
+            c[4].write(f"{r['SL']:.2f}")
+            c[5].write(f"{r['ATR']:.2f}")
+            for j, k in enumerate(extra_cols):
+                val = r.get(k, "")
+                if isinstance(val, (int, float)):
+                    c[6 + j].write(f"{val:.2f}")
+                else:
+                    c[6 + j].write(str(val))
+            if c[-1].button("📊", key=f"dc_{ticker}"):
+                st.session_state.chart_ticker = ticker
+
+        # Summary counts
+        all_data = st.session_state.get("daily_all_data")
+        if all_data:
+            st.divider()
+            st.caption("Signal counts across all strategies:")
+            c1, c2, c3, c4 = st.columns(4)
+            for col, label, key in [(c1, "JNSAR", "jnsar_sig"), (c2, "J10SAR", "j10_sig"),
+                                     (c3, "MA Xover", "ma_sig"), (c4, "LRHR", "lrhr_sig")]:
+                cnt = sum(1 for _, (closes, highs, lows, vols, dates) in all_data.items()
+                          if (r := _scan_ticker(closes, highs, lows, vols, dates)) and r[key] != "NONE")
+                col.metric(label, cnt)
+
+    # Chart modal — shown when a ticker is selected
+    if st.session_state.chart_ticker:
+        ticker = st.session_state.chart_ticker
+        with st.container(border=True):
+            hcol1, hcol2 = st.columns([6, 1])
+            hcol1.subheader(f"📈 {ticker}")
+            if hcol2.button("✕ Close", type="primary"):
+                st.session_state.chart_ticker = None
+                st.rerun()
+
+            with st.spinner(f"Loading chart for {ticker}..."):
+                chart_data = get_stock_chart(ticker, 150)
+
+            if "error" in chart_data or not chart_data.get("candles"):
+                st.error(chart_data.get("error", "No chart data available"))
+            else:
+                candles = chart_data["candles"]
+                fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.7, 0.3])
+
+                fig.add_trace(go.Candlestick(
+                    x=[c["date"] for c in candles], open=[c["open"] for c in candles],
+                    high=[c["high"] for c in candles], low=[c["low"] for c in candles],
+                    close=[c["close"] for c in candles], name=ticker,
+                ), row=1, col=1)
+
+                fig.add_trace(go.Scatter(x=[c["date"] for c in candles], y=[c["ema8"] for c in candles],
+                    mode="lines", name="EMA 8", line=dict(color="#636efa", width=1)), row=1, col=1)
+                fig.add_trace(go.Scatter(x=[c["date"] for c in candles], y=[c["ema21"] for c in candles],
+                    mode="lines", name="EMA 21", line=dict(color="#ef553b", width=1)), row=1, col=1)
+
+                jnsar_vals = [c["jnsar"] for c in candles]
+                fig.add_trace(go.Scatter(x=[c["date"] for c in candles], y=jnsar_vals,
+                    mode="lines", name="JNSAR", line=dict(color="#ffa15a", width=1, dash="dot")), row=1, col=1)
+
+                dates_m = [c["date"] for c in candles]
+                macd_l = [c["macd_line"] for c in candles]
+                macd_s = [c["macd_signal"] for c in candles]
+                macd_h = [c["macd_histogram"] for c in candles]
+                colors = ["#00cc96" if h >= 0 else "#ef553b" for h in macd_h]
+                fig.add_trace(go.Bar(x=dates_m, y=macd_h, name="MACD Hist", marker_color=colors), row=2, col=1)
+                fig.add_trace(go.Scatter(x=dates_m, y=macd_l, mode="lines", name="MACD Line",
+                    line=dict(color="#636efa", width=1)), row=2, col=1)
+                fig.add_trace(go.Scatter(x=dates_m, y=macd_s, mode="lines", name="Signal",
+                    line=dict(color="#ef553b", width=1)), row=2, col=1)
+
+                fig.update_layout(height=500, xaxis_rangeslider_visible=False,
+                                  template="plotly_dark", hovermode="x unified")
+                fig.update_yaxes(title_text="Price", row=1, col=1)
+                fig.update_yaxes(title_text="MACD", row=2, col=1)
+
+                st.plotly_chart(fig, use_container_width=True)
+
+                last = candles[-1]
+                mcol1, mcol2, mcol3, mcol4 = st.columns(4)
+                mcol1.metric("Close", last["close"])
+                mcol2.metric("High", last["high"])
+                mcol3.metric("Low", last["low"])
+                mcol4.metric("Volume", f"{last['volume']:,}")

@@ -4,9 +4,9 @@ Nifty 50 stock screening, sector rotation (RRG), and portfolio backtesting for t
 
 ## Features
 
-- **Scan Dashboard** — Screen Nifty 500 stocks across multiple strategies (RSI, ADX, EMA crossover, Bollinger, etc.) with score breakdowns
+- **Scan Dashboard** — Screen Nifty 500 stocks across multiple strategies (RSI, ADX, EMA crossover, Bollinger, etc.) with score breakdowns. Each result row has a 📊 button to view an inline candlestick chart modal.
 - **Sector Rotation** — RRG (Relative Rotation Graph) bubble chart with quadrant analysis, per-sector unique colors, and rotation backtesting vs. Nifty 50
-- **Daily Scanner** — Scan all stocks for 4 mechanical daily-chart strategies: JNSAR (Stop & Reverse), J10SAR (EMA10 envelope), MA Crossover (8/21 with 144 EMA bias), LRHR (61.8% retracement). Results filterable by direction (LONG/SHORT) with signal counts per strategy
+- **Daily Scanner** — Scan all stocks for 4 mechanical daily-chart strategies: JNSAR (Stop & Reverse), J10SAR (EMA10 envelope), MA Crossover (8/21 with 144 EMA bias), LRHR (61.8% retracement). Results filterable by direction (LONG/SHORT) with signal counts per strategy. Each result row has a 📊 button to view an inline candlestick chart modal.
 - **Portfolio Backtesting** — Single-strategy and multi-strategy comparison backtests with equity curves, trade logs, and performance metrics
 - **Chart Analysis** — Interactive candlestick charts with indicator overlays (EMA, JNSAR, MACD, Fibonacci retracements)
 
