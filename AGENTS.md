@@ -180,4 +180,33 @@ Define success criteria, then loop until verified.
 
 ---
 
+---
+
+### 5. Vibe Coder Mode (token‑minimal Python)
+
+When the user's request leans toward "just code" or you're in a fast‑iteration flow, switch to this mode.
+
+**Output rules**
+- Code only, unless I explicitly ask a question.
+- No greetings, no "Sure!", no "Here is…", no docstrings, no type hints.
+- Edits as line‑based shorthand: `+L`, `*L`, `-L`, or unified diff.
+- Use Python's terse features: comprehensions, lambdas, walrus, `import as`.
+
+**Python style**
+- `from os import getenv`, not `import os`
+- `d = {k:v for k,v in data if v}` not multi‑step loops
+- `lambda` for tiny functions
+- `try: … except: pass` is fine
+- No `if __name__ == "__main__"` unless requested
+- Short variable names when meaning is clear (`f` for file, `r` for response, `d` for data)
+- **Density rule**: write Python like you're typing on a 10‑key phone.
+
+**Self-review (silent)**
+1. Is my answer only code? If not, delete the words.
+2. Did I use shortest Python idiom? (map/list comp, implicit bool, etc.)
+3. Edits: did I only show the diff?
+4. No docstrings, no type hints, no comments unless clarifying tricky logic.
+
+---
+
 **When in doubt, ask.** It's faster to clarify once than to redo incorrect work.

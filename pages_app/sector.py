@@ -57,7 +57,10 @@ def show():
 
     # RRG Chart
     fig = go.Figure()
-    colors = {"Leading": "#00cc96", "Improving": "#636efa", "Weakening": "#ef553b", "Lagging": "#ab63fa"}
+    # Unique color per sector from a qualitative palette
+    palette = ["#636efa","#ef553b","#00cc96","#ab63fa","#ffa15a","#19d3f3","#ff6692","#b6e880","#ff97ff","#fecb52",
+               "#d62728","#2ca02c","#9467bd","#8c564b","#e377c2","#7f7f7f","#bcbd22","#17becf"]
+    sector_colors = {s["name"]: palette[i % len(palette)] for i, s in enumerate(data["sectors"])}
 
     for s in data["sectors"]:
         # Historical trail
@@ -68,8 +71,8 @@ def show():
             fig.add_trace(go.Scatter(
                 x=tx, y=ty,
                 mode="lines+markers",
-                marker=dict(size=4, color=colors.get(s["quadrant"], "#888"), opacity=0.5),
-                line=dict(width=1.5, color=colors.get(s["quadrant"], "#888"), shape="spline"),
+                marker=dict(size=4, color=sector_colors[s["name"]], opacity=0.5),
+                line=dict(width=1.5, color=sector_colors[s["name"]], shape="spline"),
                 name=f"{s['name']} Trail",
                 showlegend=False,
                 hoverinfo="skip",
@@ -80,7 +83,7 @@ def show():
             mode="markers+text",
             text=s["name"],
             textposition="top center",
-            marker=dict(size=12, color=colors.get(s["quadrant"], "#888")),
+            marker=dict(size=12, color=sector_colors[s["name"]]),
             name=s["name"],
             hovertemplate=f"<b>{s['name']}</b><br>RS-Ratio: {s['rs_ratio']:.2f}<br>RS-Momentum: {s['rs_momentum']:.2f}<br>Quadrant: {s['quadrant']}<br>Trail: {len(trail)} weeks",
         ))

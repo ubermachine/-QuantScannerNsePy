@@ -427,3 +427,49 @@ def vol_percentile_rank(atr_arr: np.ndarray, lookback: int = 250) -> float:
 def safe_round(v: float, decimals: int = 2) -> float:
     """NaN-safe rounding."""
     return round(v, decimals) if not (np.isnan(v) or np.isinf(v)) else 0.0
+
+
+# --- Daily-chart strategy helpers ---
+
+def j10sar(closes: np.ndarray) -> tuple:
+    """J10SAR: EMA(10) mid-line + 2.5% envelope bands.
+    Returns (mid_line, upper_band, lower_band) as floats."""
+    mid = ema_last(closes, 10)
+    return (mid, mid * 1.025, mid * 0.975)
+
+
+def daily_swing_fib618(closes: np.ndarray, highs: np.ndarray, lows: np.ndarray,
+                       lookback: int = 60) -> tuple:
+    """61.8% retracement from swing high/low over a rolling lookback window.
+    Returns (fib_618, swing_high, swing_low) as floats.
+    For LRHR (Low-Risk High-Reward) daily reversal entries."""
+    n = len(closes)
+    if n < 10:
+        return (0, 0, 0)
+    # Work on the last `lookback` bars
+    start = max(0, n - lookback)
+    c, h, l = closes[start:], highs[start:], lows[start:]
+    sh, sl = float(h[0]), float(l[0])
+    rsh, rsl = 0.0, 0.0
+    state = "UP"
+    for i in range(1, len(c)):
+        if state == "UP":
+            if h[i] > sh:
+                sh = float(h[i])
+            elif c[i] < sh * 0.95:
+                rsh, state = sh, "DOWN"
+                sl = float(l[i])
+        else:
+            if l[i] < sl:
+                sl = float(l[i])
+            elif c[i] > sl * 1.05:
+                rsl, state = sl, "UP"
+                sh = float(h[i])
+    if rsh == 0:
+        rsh = float(h.max())
+    if rsl == 0:
+        rsl = float(l.min())
+    if rsh <= rsl:
+        rsh, rsl = float(h.max()), float(l.min())
+    fib = rsh - 0.618 * (rsh - rsl)
+    return (fib, rsh, rsl)

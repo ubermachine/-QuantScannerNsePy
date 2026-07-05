@@ -13,7 +13,7 @@ st.sidebar.markdown("---")
 
 page = st.sidebar.radio(
     "Navigate",
-    ["Scan Dashboard", "Sector Rotation", "Backtest", "Chart Analysis"],
+    ["Scan Dashboard", "Sector Rotation", "Daily Scanner", "Backtest", "Chart Analysis"],
     label_visibility="collapsed",
 )
 
@@ -25,6 +25,9 @@ if page == "Scan Dashboard":
     show()
 elif page == "Sector Rotation":
     from pages_app.sector import show
+    show()
+elif page == "Daily Scanner":
+    from pages_app.dailyscanner import show
     show()
 elif page == "Backtest":
     from pages_app.backtest import show

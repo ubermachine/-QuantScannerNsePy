@@ -183,9 +183,6 @@ def get_strategies() -> list:
     """Return list of available strategy names (matches Angular frontend + C# backtest)."""
     return [
         "All",
-        "JustNifty Positional",
-        "JustNifty HCT",
-        "JustNifty LRHR",
         "Quant HCT Pullback",
         "Quant LRHR Base",
         "MOMCON",
@@ -312,12 +309,6 @@ def get_stock_scan(strategy: str = "All") -> dict:
             total_score = trend_score + rs_score + vol_acc_score + vol_setup_score + momentum_score + inst_score
 
             matched = []
-            if price > ema200 and ema8 > ema21 and price > ema10 and macd_bull:
-                matched.append("JustNifty Positional")
-            if price > ema200 and price > ema21:
-                matched.append("JustNifty HCT")
-            if price > ema200 and price < ema200 * 1.05:
-                matched.append("JustNifty LRHR")
             # DPA: dip accumulation with institutional support
             if zsc < -0.5 and cmf_value > 0 and obv_up and price > ema200:
                 matched.append("DPA")
@@ -393,8 +384,8 @@ def get_stock_scan(strategy: str = "All") -> dict:
         results.sort(key=lambda r: r["score"], reverse=True)
         return {**regime, "results": results, "total_scored": len(results)}
 
-    # "All" view: score thresholds (JustNifty >= 65, others >= 60)
-    results = [r for r in results if r["score"] >= (65 if r["strategy"].startswith("JustNifty") else 60)]
+    # "All" view: score threshold
+    results = [r for r in results if r["score"] >= 60]
     results.sort(key=lambda r: r["score"], reverse=True)
     return {**regime, "results": results, "total_scored": len(results)}
 
