@@ -1,0 +1,52 @@
+name: Sync Yahoo Finance Data
+
+on:
+  schedule:
+    # Runs daily at 16:00 IST (10:30 UTC)
+    - cron: '30 10 * * *'
+  workflow_dispatch:   # Allow manual trigger from GitHub UI
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Sync Yahoo data and export Parquet
+        run: |
+          python -c "
+          import sys
+          sys.path.insert(0, '.')
+          from core import sync_yahoo_data, sync_sector_data
+
+          print('=== Syncing Yahoo data (867 tickers)... ===')
+          result = sync_yahoo_data()
+          print(f'Yahoo sync: {result}')
+
+          print('=== Syncing sector data (~16 indices)... ===')
+          result2 = sync_sector_data()
+          print(f'Sector sync: {result2}')
+          "
+
+      - name: Commit and push updated Parquet files
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git add database/*.parquet
+          git diff --staged --quiet || git commit -m 'Auto-sync: update Parquet data from Yahoo Finance'
+          git push
