@@ -35,7 +35,8 @@ def _ensure_db():
         for f in pq_files:
             table = f.replace(".parquet", "")
             path = os.path.join(_PARQUET_DIR, f).replace("\\", "/")
-            con.execute(f"CREATE TABLE IF NOT EXISTS \"{table}\" AS SELECT * FROM read_parquet('{path}')")
+            safe_table = table.replace('"', '""')
+            con.execute(f'CREATE TABLE IF NOT EXISTS "{safe_table}" AS SELECT * FROM read_parquet(?)', [path])
         con.commit()
     finally:
         con.close()
