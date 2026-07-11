@@ -2,8 +2,6 @@
 Every function can later be exposed as an LLM tool without change.
 """
 import os, duckdb, numpy as np, pandas as pd
-from datetime import datetime
-from typing import Optional
 from indicators import *
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
