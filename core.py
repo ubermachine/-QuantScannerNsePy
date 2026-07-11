@@ -459,9 +459,17 @@ def get_sector_rotation() -> dict:
     con = _conn()
     sectors = con.execute("SELECT DISTINCT Ticker FROM SectorDailyBars WHERE Ticker != ? ORDER BY Ticker", [NIFTY_TICKER]).fetchall()
     nifty = con.execute("SELECT Date, Close FROM SectorDailyBars WHERE Ticker = ? ORDER BY Date", [NIFTY_TICKER]).fetchall()
+    all_sector_rows = con.execute("SELECT Ticker, Date, Close FROM SectorDailyBars WHERE Ticker != ? ORDER BY Date", [NIFTY_TICKER]).fetchall()
     con.close()
     if not nifty or not sectors:
         return {"sectors": [], "leading": [], "improving": [], "weakening": [], "lagging": [], "rotation_signal": False}
+
+    sector_bars = {}
+    for r in all_sector_rows:
+        t, d, c = r
+        if t not in sector_bars:
+            sector_bars[t] = []
+        sector_bars[t].append((d, c))
 
     n_close = np.array([float(r[1]) for r in nifty])
     n_date = [r[0] for r in nifty]
@@ -495,9 +503,7 @@ def get_sector_rotation() -> dict:
 
     results = []
     for (ticker,) in sectors:
-        con = _conn()
-        rows = con.execute("SELECT Date, Close FROM SectorDailyBars WHERE Ticker = ? ORDER BY Date", [ticker]).fetchall()
-        con.close()
+        rows = sector_bars.get(ticker, [])
         if len(rows) < 250:
             continue
         c = np.array([float(r[1]) for r in rows])
