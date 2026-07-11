@@ -1,5 +1,6 @@
 """Pure NumPy indicator functions — no classes, no state, returns arrays or scalars."""
 import numpy as np
+import pandas as pd
 from typing import Tuple
 
 
@@ -371,9 +372,8 @@ def chandelier_exit(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray,
     if n < period:
         return out
     atr_arr = atr(highs, lows, closes, period)
-    for i in range(period, n):
-        highest = float(highs[i - period + 1:i + 1].max())
-        out[i] = highest - mult * atr_arr[i]
+    highest = pd.Series(highs).rolling(window=period).max().to_numpy()
+    out[period:] = highest[period:] - mult * atr_arr[period:]
     return out
 
 
