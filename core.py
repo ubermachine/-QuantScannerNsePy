@@ -35,7 +35,11 @@ def _ensure_db():
         for f in pq_files:
             table = f.replace(".parquet", "")
             path = os.path.join(_PARQUET_DIR, f).replace("\\", "/")
-            con.execute(f"CREATE TABLE IF NOT EXISTS \"{table}\" AS SELECT * FROM read_parquet('{path}')")
+
+            safe_table = table.replace('"', '""')
+            safe_path = path.replace("'", "''")
+
+            con.execute(f"CREATE TABLE IF NOT EXISTS \"{safe_table}\" AS SELECT * FROM read_parquet('{safe_path}')")
         con.commit()
     finally:
         con.close()
@@ -57,12 +61,15 @@ def _export_parquet(con=None):
             ).fetchone()[0]
             if not exists:
                 continue
-            cnt = con.execute(f"SELECT count(*) FROM \"{table}\"").fetchone()[0]
+
+            safe_table = table.replace('"', '""')
+
+            cnt = con.execute(f"SELECT count(*) FROM \"{safe_table}\"").fetchone()[0]
             if cnt == 0:
                 continue
-            safe_path = path.replace('\\', '/')
+            safe_path = path.replace('\\', '/').replace("'", "''")
             con.execute(
-                f"COPY \"{table}\" TO '{safe_path}' (FORMAT PARQUET, CODEC 'ZSTD', COMPRESSION_LEVEL 22)"
+                f"COPY \"{safe_table}\" TO '{safe_path}' (FORMAT PARQUET, CODEC 'ZSTD', COMPRESSION_LEVEL 22)"
             )
     finally:
         if close_con:
