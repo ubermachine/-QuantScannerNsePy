@@ -50,8 +50,10 @@ def jnsar(closes: np.ndarray, highs: np.ndarray, lows: np.ndarray) -> np.ndarray
     if n < 15:
         return out
     he5, le5, ce5 = ema(highs, 5), ema(lows, 5), ema(closes, 5)
-    for i in range(4, n):
-        out[i] = round((he5[i - 4:i + 1].sum() + le5[i - 4:i + 1].sum() + ce5[i - 4:i + 1].sum()) / 15.0, 2)
+
+    total_ema = he5 + le5 + ce5
+    rolling_sum = np.convolve(total_ema, np.ones(5), mode='valid')
+    out[4:] = np.round(rolling_sum / 15.0, 2)
     out[:4] = closes[:4]
     return out
 
