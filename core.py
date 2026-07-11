@@ -946,9 +946,10 @@ def run_backtest(params: dict) -> dict:
                     balance += trim * exit_price
 
         # Close remaining positions (exit reason: rebalance or stop/trail)
+        candidate_tickers = {c[0] for c in candidates}
         for ticker in list(pos.keys()):
             p = pos[ticker]
-            if p["shares"] > 0 and ticker not in [c[0] for c in candidates]:
+            if p["shares"] > 0 and ticker not in candidate_tickers:
                 td_r = ticker_data.get(ticker)
                 if td_r:
                     i_r = int(np.searchsorted(td_r["dates"], current_date, side="right")) - 1
