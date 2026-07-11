@@ -5,7 +5,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-from core import _batch_load_all, _load_nifty, _conn, get_stock_chart
+from core import _batch_load_all, _conn, get_stock_chart
 from indicators import *
 import numpy as np
 
