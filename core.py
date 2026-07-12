@@ -608,7 +608,7 @@ def get_sector_rotation() -> dict:
                 trail.append({"rs_ratio": safe_round(hrz), "rs_momentum": safe_round(hmz)})
         trail.append({"rs_ratio": safe_round(rs_z), "rs_momentum": safe_round(mo_z)})  # current
 
-        quad = "Leading" if rs_z > 0 and mo_z > 0 else ("Weakening" if rs_z > 0 else ("Improving" if mo_z > 0 else "Lagging"))
+        quad = "Accelerating" if rs_z > 0 and mo_z > 0 else ("Decelerating" if rs_z > 0 else ("Recovering" if mo_z > 0 else "Underperforming"))
 
         results.append({
             "ticker": ticker,
@@ -618,14 +618,21 @@ def get_sector_rotation() -> dict:
             "trail": trail,
         })
 
-    leading = [r for r in results if r["quadrant"] == "Leading"]
-    improving = [r for r in results if r["quadrant"] == "Improving"]
-    weakening = [r for r in results if r["quadrant"] == "Weakening"]
-    lagging = [r for r in results if r["quadrant"] == "Lagging"]
+    accelerating = [r for r in results if r["quadrant"] == "Accelerating"]
+    recovering = [r for r in results if r["quadrant"] == "Recovering"]
+    decelerating = [r for r in results if r["quadrant"] == "Decelerating"]
+    underperforming = [r for r in results if r["quadrant"] == "Underperforming"]
+    
+    benchmark_history = [{"date": str(r[0]), "close": float(r[1])} for r in nifty]
+    
     return {
-        "sectors": results, "leading": leading, "improving": improving,
-        "weakening": weakening, "lagging": lagging,
-        "rotation_signal": len(improving) >= 2 and len(weakening) >= 2,
+        "sectors": results,
+        "accelerating": accelerating,
+        "recovering": recovering,
+        "decelerating": decelerating,
+        "underperforming": underperforming,
+        "rotation_signal": len(recovering) >= 2 and len(decelerating) >= 2,
+        "benchmark_history": benchmark_history
     }
 
 
@@ -745,26 +752,26 @@ def run_rotation_backtest(params: dict) -> dict:
             
             # Determine quadrant
             if rs_z_val > 0 and mo_z_val > 0:
-                q = "Leading"
+                q = "Accelerating"
             elif rs_z_val > 0:
-                q = "Weakening"
+                q = "Decelerating"
             elif mo_z_val > 0:
-                q = "Improving"
+                q = "Recovering"
             else:
-                q = "Lagging"
+                q = "Underperforming"
                 
             # Previous week's quadrant for transition check
             i_prev_prev = max(0, i_prev - 5)
             rs_z_pp = td["rs_z"][i_prev_prev]
             mo_z_pp = td["mo_z"][i_prev_prev]
             if rs_z_pp > 0 and mo_z_pp > 0:
-                pq_val = "Leading"
+                pq_val = "Accelerating"
             elif rs_z_pp > 0:
-                pq_val = "Weakening"
+                pq_val = "Decelerating"
             elif mo_z_pp > 0:
-                pq_val = "Improving"
+                pq_val = "Recovering"
             else:
-                pq_val = "Lagging"
+                pq_val = "Underperforming"
                 
             i_curr = np.searchsorted(td["dates"], current_date, side="right") - 1
             curr_open = float(td["opens"][i_curr]) if i_curr >= 0 else 0
@@ -779,10 +786,10 @@ def run_rotation_backtest(params: dict) -> dict:
                 "mo_z": mo_z_val
             }
 
-        # Exit: sell if sector enters Weakening or Lagging
+        # Exit: sell if sector enters Decelerating or Underperforming
         for ticker in list(positions.keys()):
             pq = prev_quads.get(ticker)
-            if pq is None or pq["quadrant"] in ["Weakening", "Lagging"]:
+            if pq is None or pq["quadrant"] in ["Decelerating", "Underperforming"]:
                 exit_price = pq["curr_price"] if pq else positions[ticker]["entry_price"]
                 p = positions[ticker]
                 gross_ret = (exit_price - p["entry_price"]) / p["entry_price"] * 100
@@ -799,8 +806,8 @@ def run_rotation_backtest(params: dict) -> dict:
                 balance += p["shares"] * exit_price
                 del positions[ticker]
 
-        # Buy candidates: sectors in Improving quadrant
-        candidates = [t for t, pq in prev_quads.items() if pq["quadrant"] == "Improving"]
+        # Buy candidates: sectors in Recovering quadrant
+        candidates = [t for t, pq in prev_quads.items() if pq["quadrant"] == "Recovering"]
         candidates_sorted = sorted([(prev_quads[t]["mo_z"], t, prev_quads[t]["curr_price"]) for t in candidates], key=lambda x: -x[0])
         
         to_buy = [(t, p) for _, t, p in candidates_sorted if t not in positions]
