@@ -1,4 +1,4 @@
-"""Sector Rotation — Premium RRG dashboard inspired by DEXT T3, with dynamic checkboxes, stacked charts, and colored quadrants."""
+"""Sector Rotation — Premium RRG dashboard inspired by DEXT T3, with 100-based axes, dynamic checkboxes, trail length slider, direction arrows, and clockwise lifecycle guide."""
 import streamlit as st
 import plotly.graph_objects as go
 import sys, os, pandas as pd
@@ -9,11 +9,24 @@ from core import get_sector_rotation, run_rotation_backtest, sync_sector_data, e
 def show():
     st.subheader("🔄 Sector Rotation — RRG")
 
+    # Dynamic explanation guide for RRG clockwise rotation lifecycle
+    with st.expander("ℹ️ How to Read this Sector Rotation (RRG) Chart", expanded=False):
+        st.markdown("""
+        **Relative Rotation Graphs (RRG)** track the strength and momentum of sectors relative to the benchmark index (Nifty 50).
+        
+        Sectors typically rotate in a **clockwise** cycle through the four quadrants:
+        1. **📈 Recovering (Top-Left):** Sector momentum is turning positive, but trend strength is still lagging. *Add to Watchlist.*
+        2. **🚀 Accelerating (Top-Right):** Sector has both strong trend and strong momentum. *Strong Buy/Hold candidate.*
+        3. **📉 Decelerating (Bottom-Right):** Sector trend remains strong, but upward momentum is fading. *Consider locking in profits.*
+        4. **⚪ Underperforming (Bottom-Left):** Both trend and momentum are weak. *Avoid or exit positions.*
+        
+        *The Vector Arrow (↗, ↖, ↙, ↘) next to the symbol shows its weekly rotation direction. Northeast movement (↗) is a strong bullish indicator.*
+        """)
+
     # Sync button in sidebar
     with st.sidebar:
         st.markdown("### 📥 Sector Index Data")
         st.caption("Downloads 5 years of daily data for all sector indices from Yahoo Finance")
-        # Fixed use_container_width deprecation warning
         if st.button("Sync Sector Indices", type="secondary", width="stretch",
                      help="Downloads ~5yr daily data for 16 sector indices"):
             with st.spinner("Syncing sector indices from Yahoo Finance... (takes ~1-2 min)"):
@@ -74,10 +87,11 @@ def show():
                                          key=f"check_{s['name']}", label_visibility="collapsed")
                 st.session_state.selected_sectors[s["name"]] = is_checked
             with r2:
-                # Symbol Name
-                st.markdown(f"<span style='font-size: 13px; font-weight: bold;'>{s['name']}</span>", unsafe_allow_html=True)
+                # Symbol Name and Direction Arrow indicator
+                symbol_html = f"<span style='font-size: 13px; font-weight: bold;'>{s['name']} {s['direction']}</span>"
+                st.markdown(symbol_html, unsafe_allow_html=True)
             with r3:
-                # Live Quadrant pill matching RRG color coding
+                # Live Quadrant badge
                 quad = s["quadrant"]
                 if quad == "Accelerating":
                     st.markdown("<span style='font-size: 11px; color:#00cc96; background-color:rgba(0,204,150,0.1); padding:2px 6px; border-radius:4px; font-weight:bold;'>Accelerating</span>", unsafe_allow_html=True)
@@ -127,8 +141,10 @@ def show():
 
         st.divider()
 
-        # 2. Bottom Chart: RRG Scatter Graph with quadrants and trails
+        # 2. Trail length slider above bottom RRG plot to control clutter
         st.markdown("#### Relative Cycle Graph")
+        trail_weeks = st.slider("Historical Trail Length (Weeks)", min_value=1, max_value=20, value=5, step=1)
+
         fig_rrg = go.Figure()
         
         # Color palette for checked symbols
@@ -143,9 +159,13 @@ def show():
                 continue
                 
             trail = s.get("trail", [])
-            if len(trail) >= 2:
-                tx = [p["rs_ratio"] for p in trail]
-                ty = [p["rs_momentum"] for p in trail]
+            # Slice historical trail to the slider value
+            trail_sliced = trail[-trail_weeks:] if len(trail) >= trail_weeks else trail
+            
+            if len(trail_sliced) >= 2:
+                # Plot 100-based shifted values: coordinate = z_score * 5 + 100
+                tx = [p["rs_ratio"] * 5 + 100 for p in trail_sliced]
+                ty = [p["rs_momentum"] * 5 + 100 for p in trail_sliced]
                 fig_rrg.add_trace(go.Scatter(
                     x=tx, y=ty,
                     mode="lines+markers",
@@ -155,43 +175,49 @@ def show():
                     hoverinfo="skip"
                 ))
             
-            # Current value dot with arrowhead annotation logic (represented as text)
+            # Current value dot mapped to 100-based axes
+            curr_x_100 = s["rs_ratio"] * 5 + 100
+            curr_y_100 = s["rs_momentum"] * 5 + 100
             fig_rrg.add_trace(go.Scatter(
-                x=[s["rs_ratio"]], y=[s["rs_momentum"]],
+                x=[curr_x_100], y=[curr_y_100],
                 mode="markers+text",
                 text=s["name"],
                 textposition="top center",
                 marker=dict(size=12, color=sector_colors[s["name"]]),
                 name=s["name"],
-                hovertemplate=f"<b>{s['name']}</b><br>Trend: {s['rs_ratio']:.2f}<br>Mom: {s['rs_momentum']:.2f}<br>Quadrant: {s['quadrant']}",
+                hovertemplate=f"<b>{s['name']}</b><br>Trend: {curr_x_100:.2f}<br>Mom: {curr_y_100:.2f}<br>Quadrant: {s['quadrant']}",
             ))
 
-        # Color-coded quadrant backgrounds
+        # Color-coded quadrant backgrounds split at exactly 100.00
         quadrant_shapes = [
             # Top-Right (Accelerating) - Green
-            dict(type="rect", xref="x", yref="y", x0=0, y0=0, x1=4, y1=4, fillcolor="rgba(0, 204, 150, 0.03)", line_width=0, layer="below"),
+            dict(type="rect", xref="x", yref="y", x0=100, y0=100, x1=120, y1=120, fillcolor="rgba(0, 204, 150, 0.03)", line_width=0, layer="below"),
             # Top-Left (Recovering) - Purple
-            dict(type="rect", xref="x", yref="y", x0=-4, y0=0, x1=0, y1=4, fillcolor="rgba(171, 99, 250, 0.03)", line_width=0, layer="below"),
+            dict(type="rect", xref="x", yref="y", x0=80, y0=100, x1=100, y1=120, fillcolor="rgba(171, 99, 250, 0.03)", line_width=0, layer="below"),
             # Bottom-Left (Lagging/Underperforming) - Red
-            dict(type="rect", xref="x", yref="y", x0=-4, y0=-4, x1=0, y1=0, fillcolor="rgba(239, 85, 59, 0.03)", line_width=0, layer="below"),
+            dict(type="rect", xref="x", yref="y", x0=80, y0=80, x1=100, y1=100, fillcolor="rgba(239, 85, 59, 0.03)", line_width=0, layer="below"),
             # Bottom-Right (Decelerating) - Yellow
-            dict(type="rect", xref="x", yref="y", x0=0, y0=-4, x1=4, y1=0, fillcolor="rgba(255, 161, 90, 0.03)", line_width=0, layer="below")
+            dict(type="rect", xref="x", yref="y", x0=100, y0=80, x1=120, y1=100, fillcolor="rgba(255, 161, 90, 0.03)", line_width=0, layer="below")
         ]
+
+        # Draw grid dividing lines crossing exactly at 100.00
+        fig_rrg.add_hline(y=100, line_color="#444", line_dash="dash", opacity=0.7)
+        fig_rrg.add_vline(x=100, line_color="#444", line_dash="dash", opacity=0.7)
 
         fig_rrg.update_layout(
             height=500,
-            xaxis=dict(title="Strength Trend (RS-Ratio)", range=[-3.5, 3.5], gridcolor="#222", zerolinecolor="#444"),
-            yaxis=dict(title="Strength Momentum (RS-Momentum)", range=[-3.5, 3.5], gridcolor="#222", zerolinecolor="#444"),
+            xaxis=dict(title="Strength Trend (RS-Ratio)", range=[85, 115], gridcolor="#222", showgrid=True, zeroline=False),
+            yaxis=dict(title="Strength Momentum (RS-Momentum)", range=[85, 115], gridcolor="#222", showgrid=True, zeroline=False),
             plot_bgcolor="rgba(0,0,0,0)",
             paper_bgcolor="rgba(0,0,0,0)",
             shapes=quadrant_shapes,
             showlegend=False,
             margin=dict(l=10, r=10, t=10, b=10),
             annotations=[
-                dict(x=2.5, y=3.0, text="Accelerating", showarrow=False, font=dict(color="#00cc96", size=14, weight="bold")),
-                dict(x=-2.5, y=3.0, text="Recovering", showarrow=False, font=dict(color="#ab63fa", size=14, weight="bold")),
-                dict(x=2.5, y=-3.0, text="Decelerating", showarrow=False, font=dict(color="#ffa15a", size=14, weight="bold")),
-                dict(x=-2.5, y=-3.0, text="Underperforming", showarrow=False, font=dict(color="#ef553b", size=14, weight="bold")),
+                dict(x=110, y=112.5, text="Accelerating", showarrow=False, font=dict(color="#00cc96", size=14, weight="bold")),
+                dict(x=90, y=112.5, text="Recovering", showarrow=False, font=dict(color="#ab63fa", size=14, weight="bold")),
+                dict(x=110, y=87.5, text="Decelerating", showarrow=False, font=dict(color="#ffa15a", size=14, weight="bold")),
+                dict(x=90, y=87.5, text="Underperforming", showarrow=False, font=dict(color="#ef553b", size=14, weight="bold")),
             ]
         )
         st.plotly_chart(fig_rrg, use_container_width=True)
@@ -208,6 +234,10 @@ def show():
         with tab:
             if qlist:
                 df = pd.DataFrame(qlist)
+                # Display shifted values in table to stay consistent with chart
+                df["rs_ratio"] = df["rs_ratio"] * 5 + 100
+                df["rs_momentum"] = df["rs_momentum"] * 5 + 100
+                
                 st.dataframe(df[["ticker", "name", "rs_ratio", "rs_momentum", "price"]],
                              use_container_width=True,
                              column_config={
@@ -226,7 +256,6 @@ def show():
     with col2:
         rot_capital = st.number_input("Capital", min_value=10000, value=100000, step=10000, key="rot_cap",
                                        label_visibility="collapsed")
-    # Fixed use_container_width deprecation warning
     run_rot = st.button("Run Rotation Backtest", type="primary", width="stretch")
 
     if run_rot:

@@ -610,12 +610,30 @@ def get_sector_rotation() -> dict:
 
         quad = "Accelerating" if rs_z > 0 and mo_z > 0 else ("Decelerating" if rs_z > 0 else ("Recovering" if mo_z > 0 else "Underperforming"))
 
+        # Calculate rotation direction arrow from last two points of the trail
+        direction = "↗"
+        if len(trail) >= 2:
+            prev_x = trail[-2]["rs_ratio"]
+            prev_y = trail[-2]["rs_momentum"]
+            dx = rs_z - prev_x
+            dy = mo_z - prev_y
+            angle = np.degrees(np.arctan2(dy, dx)) % 360
+            if 0 <= angle < 90:
+                direction = "↗"
+            elif 90 <= angle < 180:
+                direction = "↖"
+            elif 180 <= angle < 270:
+                direction = "↙"
+            else:
+                direction = "↘"
+
         results.append({
             "ticker": ticker,
             "name": s_names.get(ticker, ticker.replace("^", "")),
             "rs_ratio": safe_round(rs_z), "rs_momentum": safe_round(mo_z),
             "quadrant": quad, "price": safe_round(c[-1]),
             "trail": trail,
+            "direction": direction,
         })
 
     accelerating = [r for r in results if r["quadrant"] == "Accelerating"]
