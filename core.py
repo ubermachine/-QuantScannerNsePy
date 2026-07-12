@@ -21,21 +21,113 @@ _PARQUET_TABLES = {
 _db_initialized = False
 
 
+def z_score_array(closes: np.ndarray, period: int = 50) -> np.ndarray:
+    n = len(closes)
+    out = np.zeros(n)
+    if n < period:
+        return out
+    from numpy.lib.stride_tricks import sliding_window_view
+    windows = sliding_window_view(closes, period)
+    means = windows.mean(axis=-1)
+    stds = windows.std(axis=-1, ddof=0)
+    stds_safe = np.where(stds == 0, 1.0, stds)
+    out[period - 1:] = (closes[period - 1:] - means) / stds_safe
+    out[period - 1:][stds == 0] = 0.0
+    return out
+
+
+def ytd_vwap_array(closes: np.ndarray, dates: np.ndarray, volumes: np.ndarray) -> np.ndarray:
+    n = len(closes)
+    out = np.copy(closes)
+    if n == 0:
+        return out
+    years = np.array([d.year if hasattr(d, 'year') else 2025 for d in dates])
+    for yr in np.unique(years):
+        mask = (years == yr)
+        v_slice = volumes[mask]
+        c_slice = closes[mask]
+        cum_pv = np.cumsum(c_slice * v_slice)
+        cum_v = np.cumsum(v_slice)
+        cum_v_safe = np.where(cum_v == 0, 1.0, cum_v)
+        out[mask] = cum_pv / cum_v_safe
+    return out
+
+
+def point_of_control_array(closes: np.ndarray, volumes: np.ndarray, lookback: int = 150) -> np.ndarray:
+    n = len(closes)
+    out = np.copy(closes)
+    if n == 0:
+        return out
+    pv = closes * volumes
+    cum_pv = np.zeros(n + 1)
+    cum_pv[1:] = np.cumsum(pv)
+    cum_v = np.zeros(n + 1)
+    cum_v[1:] = np.cumsum(volumes)
+    for i in range(n):
+        start = max(0, i - lookback + 1)
+        sum_pv = cum_pv[i + 1] - cum_pv[start]
+        sum_v = cum_v[i + 1] - cum_v[start]
+        out[i] = sum_pv / sum_v if sum_v > 0 else closes[i]
+    return out
+
+
+def vol_percentile_rank_array(atr_arr: np.ndarray, lookback: int = 250) -> np.ndarray:
+    n = len(atr_arr)
+    out = np.full(n, 50.0)
+    if n < lookback:
+        return out
+    for i in range(lookback - 1, n):
+        s = atr_arr[i - lookback + 1 : i + 1]
+        last_val = atr_arr[i]
+        out[i] = (s < last_val).sum() / lookback * 100.0
+    return out
+
+
+def _get_parquet_path(table_name: str) -> str:
+    """Resolves Parquet file path from local data lake, local db fallback, or remote URL."""
+    filename = f"{table_name}.parquet"
+    
+    # Check local data lake path
+    local_lake_dir = os.path.abspath(os.path.join(_HERE, "..", "..", "market-data-lake", "data"))
+    local_path = os.path.join(local_lake_dir, filename)
+    if os.path.exists(local_path):
+        return local_path.replace("\\", "/")
+        
+    # Check local database directory (fallback)
+    local_db_path = os.path.join(_PARQUET_DIR, filename)
+    if os.path.exists(local_db_path):
+        return local_db_path.replace("\\", "/")
+
+    # Default to raw GitHub URL
+    github_user = os.getenv("GITHUB_USER", "HP")
+    github_repo = os.getenv("GITHUB_REPO", "market-data-lake")
+    return f"https://raw.githubusercontent.com/{github_user}/{github_repo}/main/data/{filename}"
+
+
 def _ensure_db():
-    """If DuckDB file doesn't exist, recreate it from Parquet files (shipped in git)."""
-    if os.path.exists(DB):
-        return
-    if not os.path.isdir(_PARQUET_DIR):
-        return
-    pq_files = [f for f in os.listdir(_PARQUET_DIR) if f.endswith(".parquet")]
-    if not pq_files:
-        return
+    """Recreate tables in DuckDB from central Parquet files (local or remote)."""
+    # If DB exists, we still want to make sure the tables are initialized
     con = duckdb.connect(DB)
     try:
-        for f in pq_files:
-            table = f.replace(".parquet", "")
-            path = os.path.join(_PARQUET_DIR, f).replace("\\", "/")
-            con.execute(f"CREATE TABLE IF NOT EXISTS \"{table}\" AS SELECT * FROM read_parquet('{path}')")
+        # Load httpfs if we have any remote url
+        has_http = any(_get_parquet_path(t).startswith("http") for t in _PARQUET_TABLES.keys())
+        if has_http:
+            try:
+                con.execute("INSTALL httpfs; LOAD httpfs;")
+            except Exception as e:
+                print(f"Failed to load httpfs extension: {e}")
+            
+        for table in _PARQUET_TABLES.keys():
+            # Check if table already exists. In TDD mock test we drop it,
+            # but in production we only create if it doesn't exist to save startup time.
+            exists = con.execute(
+                "SELECT count(*) FROM information_schema.tables WHERE table_name = ? AND table_type = 'BASE TABLE'",
+                [table]
+            ).fetchone()[0]
+            
+            if not exists:
+                path = _get_parquet_path(table)
+                con.execute(f"CREATE TABLE \"{table}\" AS SELECT * FROM read_parquet('{path}')")
         con.commit()
     finally:
         con.close()
@@ -578,53 +670,66 @@ def run_rotation_backtest(params: dict) -> dict:
                     "NIFTY_OIL_AND_GAS.NS": "Oil & Gas",
                     "^CNXCONSUM": "Consumer Durables"}
 
-    def _ema(arr, p):
-        out = np.empty_like(arr)
-        k = 2.0 / (p + 1)
-        out[0] = arr[0]
-        for i in range(1, len(arr)):
-            out[i] = arr[i] * k + out[i - 1] * (1 - k)
-        return out
-
-    def _compute_rrg(ticker_bars, nifty_slice, n_end, lookback=250):
-        """Compute RRG quadrant at a specific point."""
-        closes = np.array([float(r[2]) for r in ticker_bars])
-        min_l = min(len(closes), len(nifty_slice))
-        if min_l < lookback:
-            return None
-        rs = closes[-min_l:] / nifty_slice[-min_l:]
-        rs_st = _ema(rs, 10)
-        rs_lt = _ema(rs, 40)
-        mom = rs_st - rs_lt
-        lb = min(lookback, len(rs_st))
-        st_s = rs_st[-lb:]
-        rs_z = (rs_st[-1] - st_s.mean()) / st_s.std(ddof=0) if st_s.std(ddof=0) > 0 else 0
-        mo_s = mom[-lb:]
-        mo_z = (mom[-1] - mo_s.mean()) / mo_s.std(ddof=0) if mo_s.std(ddof=0) > 0 else 0
-        if rs_z > 0 and mo_z > 0:
-            q = "Leading"
-        elif rs_z > 0:
-            q = "Weakening"
-        elif mo_z > 0:
-            q = "Improving"
-        else:
-            q = "Lagging"
-        return {"quadrant": q, "rs_z": rs_z, "mo_z": mo_z}
+    # Pre-compute RRG coordinates for all sectors relative to Nifty index
+    nifty_closes = np.array([float(r[3]) for r in nifty])
+    n_dates_arr = np.array(n_dates)
+    
+    for ticker, td in list(ticker_data.items()):
+        if ticker == "^NSEI":
+            continue
+        try:
+            s_dates = td["dates"]
+            s_closes = td["closes"]
+            
+            idx_nifty = np.searchsorted(n_dates_arr, s_dates)
+            idx_nifty = np.clip(idx_nifty, 0, len(nifty_closes) - 1)
+            n_c_aligned = nifty_closes[idx_nifty]
+            
+            rs = s_closes / n_c_aligned
+            rs_st = ema(rs, 10)
+            rs_lt = ema(rs, 40)
+            mom = rs_st - rs_lt
+            
+            lookback = 250
+            n_bars = len(rs)
+            
+            rs_z = np.zeros(n_bars)
+            mo_z = np.zeros(n_bars)
+            
+            if n_bars >= lookback:
+                from numpy.lib.stride_tricks import sliding_window_view
+                windows_st = sliding_window_view(rs_st, lookback)
+                mean_st = windows_st.mean(axis=-1)
+                std_st = windows_st.std(axis=-1, ddof=0)
+                std_st_safe = np.where(std_st == 0, 1.0, std_st)
+                rs_z[lookback - 1:] = (rs_st[lookback - 1:] - mean_st) / std_st_safe
+                
+                windows_mom = sliding_window_view(mom, lookback)
+                mean_mom = windows_mom.mean(axis=-1)
+                std_mom = windows_mom.std(axis=-1, ddof=0)
+                std_mom_safe = np.where(std_mom == 0, 1.0, std_mom)
+                mo_z[lookback - 1:] = (mom[lookback - 1:] - mean_mom) / std_mom_safe
+                
+            td["rs_z"] = rs_z
+            td["mo_z"] = mo_z
+        except Exception:
+            del ticker_data[ticker]
+            continue
 
     # Walk weekly through time
-    start_idx = 50  # need 50 bars for 1M momentum
+    start_idx = 250  # need 250 bars for stable RRG
     step = 5  # weekly
     balance = capital
     peak = capital
     trades = []
     equity = [{"date": n_dates[start_idx].isoformat(), "balance": capital, "drawdown_pct": 0}]
-    positions = {}  # ticker -> {entry_idx, entry_price}
+    positions = {}  # ticker -> {entry_idx, entry_price, shares}
 
     for idx in range(start_idx + step, len(n_dates), step):
         current_date = n_dates[idx]
         prev_date = n_dates[idx - step]  # last week's date (signal reference)
 
-        # Compute 1-month momentum using LAST WEEK's close + numpy fast lookups
+        # Compute RRG quadrant at prev_date
         prev_quads = {}
         for ticker, td in ticker_data.items():
             if ticker == "^NSEI":
@@ -632,30 +737,53 @@ def run_rotation_backtest(params: dict) -> dict:
             if len(td["dates"]) <= idx:
                 continue
             i_prev = np.searchsorted(td["dates"], prev_date, side="right") - 1
-            if i_prev < 25:
+            if i_prev < 250:
                 continue
-            mom_1m = (td["closes"][i_prev] - td["closes"][i_prev - 21]) / td["closes"][i_prev - 21] * 100
+                
+            rs_z_val = td["rs_z"][i_prev]
+            mo_z_val = td["mo_z"][i_prev]
+            
+            # Determine quadrant
+            if rs_z_val > 0 and mo_z_val > 0:
+                q = "Leading"
+            elif rs_z_val > 0:
+                q = "Weakening"
+            elif mo_z_val > 0:
+                q = "Improving"
+            else:
+                q = "Lagging"
+                
+            # Previous week's quadrant for transition check
+            i_prev_prev = max(0, i_prev - 5)
+            rs_z_pp = td["rs_z"][i_prev_prev]
+            mo_z_pp = td["mo_z"][i_prev_prev]
+            if rs_z_pp > 0 and mo_z_pp > 0:
+                pq_val = "Leading"
+            elif rs_z_pp > 0:
+                pq_val = "Weakening"
+            elif mo_z_pp > 0:
+                pq_val = "Improving"
+            else:
+                pq_val = "Lagging"
+                
             i_curr = np.searchsorted(td["dates"], current_date, side="right") - 1
             curr_open = float(td["opens"][i_curr]) if i_curr >= 0 else 0
             curr_close = float(td["closes"][i_curr]) if i_curr >= 0 else 0
-            prev_quads[ticker] = {"curr_price": curr_open,  # execute at open
-                                   "curr_close": curr_close,  # for peak tracking
-                                   "mo_z": mom_1m}
+            
+            prev_quads[ticker] = {
+                "curr_price": curr_open,
+                "curr_close": curr_close,
+                "quadrant": q,
+                "prev_quadrant": pq_val,
+                "rs_z": rs_z_val,
+                "mo_z": mo_z_val
+            }
 
-        # Top-3 momentum rotation: rank sectors by RS-Momentum, hold top 3
-        ranked = sorted([(pq["mo_z"], ticker, pq["curr_price"])
-                         for ticker, pq in prev_quads.items()], key=lambda x: -x[0])
-        top_n = 2
-        top = ranked[:top_n]
-
-        # Exit: sell if not the #1 momentum sector, rotate to new #1
-        best_ticker = ranked[0][1] if ranked else None
+        # Exit: sell if sector enters Weakening or Lagging
         for ticker in list(positions.keys()):
-            if ticker != best_ticker:
-                pq = prev_quads.get(ticker)
-                if pq is None:
-                    continue
-                exit_price = pq["curr_price"]
+            pq = prev_quads.get(ticker)
+            if pq is None or pq["quadrant"] in ["Weakening", "Lagging"]:
+                exit_price = pq["curr_price"] if pq else positions[ticker]["entry_price"]
                 p = positions[ticker]
                 gross_ret = (exit_price - p["entry_price"]) / p["entry_price"] * 100
                 trades.append({
@@ -666,23 +794,30 @@ def run_rotation_backtest(params: dict) -> dict:
                     "entry_price": safe_round(p["entry_price"]),
                     "exit_price": safe_round(exit_price),
                     "return_pct": safe_round(gross_ret),
-                    "days_held": (n_dates[idx] - n_dates[p["entry_idx"]]).days,
+                    "days_held": (current_date - n_dates[p["entry_idx"]]).days,
                 })
                 balance += p["shares"] * exit_price
                 del positions[ticker]
 
-        # Buy top N sectors equally (only if not already held)
-        to_buy = [(t, p) for _, t, p in top if t not in positions]
+        # Buy candidates: sectors in Improving quadrant
+        candidates = [t for t, pq in prev_quads.items() if pq["quadrant"] == "Improving"]
+        candidates_sorted = sorted([(prev_quads[t]["mo_z"], t, prev_quads[t]["curr_price"]) for t in candidates], key=lambda x: -x[0])
+        
+        to_buy = [(t, p) for _, t, p in candidates_sorted if t not in positions]
         if to_buy:
-            alloc = balance / len(to_buy)
-            for ticker, entry_price in to_buy:
-                shares = int(alloc / entry_price) if entry_price > 0 else 0
-                if shares > 0:
-                    cost = shares * entry_price
-                    if cost <= balance:
-                        balance -= cost
-                        positions[ticker] = {"entry_idx": idx, "entry_price": entry_price, "shares": shares,
-                                              "peak_price": entry_price}
+            max_rot_pos = 3
+            slots_available = max(0, max_rot_pos - len(positions))
+            if slots_available > 0:
+                to_buy = to_buy[:slots_available]
+                alloc = balance / len(to_buy) if len(to_buy) > 0 else 0
+                for ticker, entry_price in to_buy:
+                    shares = int(alloc / entry_price) if entry_price > 0 else 0
+                    if shares > 0:
+                        cost = shares * entry_price
+                        if cost <= balance:
+                            balance -= cost
+                            positions[ticker] = {"entry_idx": idx, "entry_price": entry_price, "shares": shares,
+                                                 "peak_price": entry_price}
 
         # Mark to market
         mtm = balance
@@ -798,6 +933,11 @@ def run_backtest(params: dict) -> dict:
             td["cmf"] = cmf(td["highs"], td["lows"], c, td["volumes"])
             td["bb_u"], td["bb_m"], td["bb_l"] = bollinger(c)
             td["chandelier"] = chandelier_exit(td["highs"], td["lows"], c)
+            td["zsc"] = z_score_array(c)
+            td["ytd_vwap_arr"] = ytd_vwap_array(c, td["dates"], td["volumes"])
+            td["poc_arr"] = point_of_control_array(c, td["volumes"])
+            td["vol_pct_rank"] = vol_percentile_rank_array(td["atr"])
+            td["kc_u"], td["kc_m"], td["kc_l"] = keltner(td["highs"], td["lows"], c)
         except Exception:
             del ticker_data[t]
             continue
@@ -841,25 +981,23 @@ def run_backtest(params: dict) -> dict:
                 if price > ema200 and price < ema200 * 1.05:
                     candidates.append((t, price))
             elif strategy == "Quant HCT Pullback":
-                c_sig = c[:i_c+1]; v_sig = td["volumes"][:i_c+1]; h_sig = td["highs"][:i_c+1]; l_sig = td["lows"][:i_c+1]
-                ytd_v = ytd_vwap(c_sig, td["dates"][:i_c+1], v_sig)
-                poc_v = point_of_control(c_sig, v_sig)
-                zsc = z_score_last(c_sig)
+                ytd_v = td["ytd_vwap_arr"][i_c]
+                poc_v = td["poc_arr"][i_c]
+                zsc = td["zsc"][i_c]
                 chand_l = td["chandelier"][i_c]
                 obv_up = td["obv"][i_c] > td["obv"][i_c-20] if i_c >= 20 else False
                 cmf_v = td["cmf"][i_c]
-                vpr = vol_percentile_rank(td["atr"][:i_c+1])
+                vpr = td["vol_pct_rank"][i_c]
                 ytd_ok = (price >= ytd_v * 0.97 and price <= ytd_v * 1.05) or (price >= poc_v * 0.97 and price <= poc_v * 1.05)
                 if ytd_ok and obv_up and cmf_v > 0 and vpr < 30 and zsc >= -1.0 and zsc <= 0.5 and price > chand_l:
                     candidates.append((t, price))
             elif strategy == "Quant LRHR Base":
-                c_sig = c[:i_c+1]; v_sig = td["volumes"][:i_c+1]; h_sig = td["highs"][:i_c+1]; l_sig = td["lows"][:i_c+1]
-                zsc = z_score_last(c_sig)
-                max52 = float(h_sig.max())
+                zsc = td["zsc"][i_c]
+                max52 = float(td["highs"][:i_c+1].max())
                 disc52w = (max52 - price) / max52 if max52 > 0 else 0
                 cmf_v = td["cmf"][i_c]
-                poc_v = point_of_control(c_sig, v_sig)
-                vpr = vol_percentile_rank(td["atr"][:i_c+1])
+                poc_v = td["poc_arr"][i_c]
+                vpr = td["vol_pct_rank"][i_c]
                 obv_up_10 = td["obv"][i_c] > td["obv"][i_c-10] if i_c >= 10 else False
                 cmf_inflection = td["cmf"][i_c-5] <= 0 if i_c >= 5 else True
                 if zsc < -1.0 and disc52w >= 0.15 and cmf_v > 0 and cmf_inflection and obv_up_10 and vpr < 50 and price > poc_v:
@@ -869,11 +1007,11 @@ def run_backtest(params: dict) -> dict:
                 if total >= 10 and td["macd_line"][i_c] > td["macd_sig"][i_c] and price > ema50:
                     candidates.append((t, price))
             elif strategy == "VAL":
-                if z_score_last(c[:i_c+1]) < 0 and td["cmf"][i_c] > 0 and (td["obv"][i_c] > td["obv"][i_c-20] if i_c >= 20 else False):
+                if td["zsc"][i_c] < 0 and td["cmf"][i_c] > 0 and (td["obv"][i_c] > td["obv"][i_c-20] if i_c >= 20 else False):
                     candidates.append((t, price))
             elif strategy == "VBO":
                 rsi_v = td["rsi"][i_c]
-                vpr = vol_percentile_rank(td["atr"][:i_c+1])
+                vpr = td["vol_pct_rank"][i_c]
                 vs = volume_score(c[:i_c+1], td["volumes"][:i_c+1])
                 if vpr < 20 and rsi_v < 60 and vs >= 5:
                     candidates.append((t, price))
@@ -883,11 +1021,11 @@ def run_backtest(params: dict) -> dict:
                 if price > ema21 and obv_up and rsi_v > 50:
                     candidates.append((t, price))
             elif strategy == "CBO":
-                vpr = vol_percentile_rank(td["atr"][:i_c+1])
-                if td["bb_u"][i_c] > 0 and td["bb_u"][i_c] < keltner_last(td["highs"][:i_c+1], td["lows"][:i_c+1], c[:i_c+1])[0] and td["bb_l"][i_c] > keltner_last(td["highs"][:i_c+1], td["lows"][:i_c+1], c[:i_c+1])[2] and vpr < 40:
+                vpr = td["vol_pct_rank"][i_c]
+                if td["bb_u"][i_c] > 0 and td["bb_u"][i_c] < td["kc_u"][i_c] and td["bb_l"][i_c] > td["kc_l"][i_c] and vpr < 40:
                     candidates.append((t, price))
             elif strategy == "DPA":
-                if z_score_last(c[:i_c+1]) < -0.5 and td["cmf"][i_c] > 0 and (td["obv"][i_c] > td["obv"][i_c-20] if i_c >= 20 else False) and price > ema200:
+                if td["zsc"][i_c] < -0.5 and td["cmf"][i_c] > 0 and (td["obv"][i_c] > td["obv"][i_c-20] if i_c >= 20 else False) and price > ema200:
                     candidates.append((t, price))
             elif strategy == "RSML":
                 if price > ema21 and ema8 > ema21:
@@ -1154,8 +1292,7 @@ def remove_from_watchlist(ticker: str) -> dict:
 
 def sync_yahoo_data() -> dict:
     """Sync data from Yahoo Finance for all stocks (Nifty + all tracked stocks).
-    THIS IS A LARGE OPERATION — downloads ~800 stocks.
-    Returns status dict.
+    Increments data by only downloading dates after the latest date in DB.
     """
     import yfinance as yf
     from time import sleep
@@ -1177,26 +1314,53 @@ def sync_yahoo_data() -> dict:
 
     for ticker in [NIFTY_TICKER] + tickers:
         try:
-            data = yf.download(ticker, period="1y", interval="1d", progress=False, auto_adjust=True)
+            r = con.execute("SELECT max(Date) FROM DailyBars WHERE Ticker = ?", [ticker]).fetchone()
+            latest_date = r[0] if (r and r[0] is not None) else None
+            
+            if latest_date:
+                start_str = latest_date.strftime("%Y-%m-%d")
+                data = yf.download(ticker, start=start_str, interval="1d", progress=False, auto_adjust=True)
+            else:
+                data = yf.download(ticker, period="1y", interval="1d", progress=False, auto_adjust=True)
+                
             if data.empty:
                 continue
-            # Extract single-level columns if MultiIndex
+                
             if isinstance(data.columns, pd.MultiIndex):
                 data.columns = data.columns.get_level_values(0)
-            con.execute("DELETE FROM DailyBars WHERE Ticker = ?", [ticker])
-            for date, row in data.iterrows():
-                dt = date.to_pydatetime()
-                con.execute(
-                    "INSERT INTO DailyBars (Ticker, Date, Open, High, Low, Close, Volume) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    [ticker, dt, float(row["Open"]), float(row["High"]), float(row["Low"]), float(row["Close"]), int(row["Volume"])]
-                )
+                
+            df = data.reset_index()
+            if 'Datetime' in df.columns:
+                df = df.rename(columns={'Datetime': 'Date'})
+            df['Date'] = pd.to_datetime(df['Date'])
+            
+            df['Open'] = df['Open'].astype(float)
+            df['High'] = df['High'].astype(float)
+            df['Low'] = df['Low'].astype(float)
+            df['Close'] = df['Close'].astype(float)
+            df['Volume'] = df['Volume'].astype(int)
+            
+            con.execute("BEGIN TRANSACTION")
+            if latest_date:
+                con.execute("DELETE FROM DailyBars WHERE Ticker = ? AND Date >= ?", [ticker, latest_date])
+            else:
+                con.execute("DELETE FROM DailyBars WHERE Ticker = ?", [ticker])
+                
+            con.register("df_temp", df)
+            con.execute("INSERT INTO DailyBars (Ticker, Date, Open, High, Low, Close, Volume) SELECT ? as Ticker, Date, Open, High, Low, Close, Volume FROM df_temp", [ticker])
+            con.unregister("df_temp")
+            con.execute("COMMIT")
+            
             synced += 1
             sleep(0.3)  # rate limit
         except Exception as e:
+            try:
+                con.execute("ROLLBACK")
+            except Exception:
+                pass
             errors.append(f"{ticker}: {str(e)}")
             continue
 
-    con.commit()
     # Export updated tables to Parquet for git distribution
     try:
         _export_parquet(con=con)
@@ -1208,8 +1372,7 @@ def sync_yahoo_data() -> dict:
 
 def sync_sector_data(period: str = "5y") -> dict:
     """Sync sector index data from Yahoo Finance for Rotation backtest.
-    Downloads ~16 sector indices with 5 years of daily data.
-    Returns status dict.
+    Increments data by only downloading dates after the latest date in DB.
     """
     import yfinance as yf
     from time import sleep
@@ -1234,27 +1397,53 @@ def sync_sector_data(period: str = "5y") -> dict:
     errors = []
     for ticker in sector_tickers:
         try:
-            data = yf.download(ticker, period=period, interval="1d", progress=False, auto_adjust=True)
+            r = con.execute("SELECT max(Date) FROM SectorDailyBars WHERE Ticker = ?", [ticker]).fetchone()
+            latest_date = r[0] if (r and r[0] is not None) else None
+            
+            if latest_date:
+                start_str = latest_date.strftime("%Y-%m-%d")
+                data = yf.download(ticker, start=start_str, interval="1d", progress=False, auto_adjust=True)
+            else:
+                data = yf.download(ticker, period=period, interval="1d", progress=False, auto_adjust=True)
+                
             if data.empty:
                 errors.append(f"{ticker}: no data returned")
                 continue
             if isinstance(data.columns, pd.MultiIndex):
                 data.columns = data.columns.get_level_values(0)
-            con.execute("DELETE FROM SectorDailyBars WHERE Ticker = ?", [ticker])
-            for date, row in data.iterrows():
-                dt = date.to_pydatetime()
-                con.execute(
-                    "INSERT INTO SectorDailyBars (Ticker, Date, Open, High, Low, Close, Volume) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    [ticker, dt, float(row["Open"]), float(row["High"]),
-                     float(row["Low"]), float(row["Close"]), int(row["Volume"])]
-                )
+                
+            df = data.reset_index()
+            if 'Datetime' in df.columns:
+                df = df.rename(columns={'Datetime': 'Date'})
+            df['Date'] = pd.to_datetime(df['Date'])
+            
+            df['Open'] = df['Open'].astype(float)
+            df['High'] = df['High'].astype(float)
+            df['Low'] = df['Low'].astype(float)
+            df['Close'] = df['Close'].astype(float)
+            df['Volume'] = df['Volume'].astype(int)
+            
+            con.execute("BEGIN TRANSACTION")
+            if latest_date:
+                con.execute("DELETE FROM SectorDailyBars WHERE Ticker = ? AND Date >= ?", [ticker, latest_date])
+            else:
+                con.execute("DELETE FROM SectorDailyBars WHERE Ticker = ?", [ticker])
+                
+            con.register("df_temp", df)
+            con.execute("INSERT INTO SectorDailyBars (Ticker, Date, Open, High, Low, Close, Volume) SELECT ? as Ticker, Date, Open, High, Low, Close, Volume FROM df_temp", [ticker])
+            con.unregister("df_temp")
+            con.execute("COMMIT")
+            
             synced += 1
             sleep(0.3)
         except Exception as e:
+            try:
+                con.execute("ROLLBACK")
+            except Exception:
+                pass
             errors.append(f"{ticker}: {str(e)[:80]}")
             continue
 
-    con.commit()
     # Export updated sector tables to Parquet for git distribution
     try:
         _export_parquet(con=con)

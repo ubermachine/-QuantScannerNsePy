@@ -152,7 +152,7 @@ def show():
             rows = []
             for ticker, (closes, highs, lows, vols, dates) in all_data.items():
                 opens = np.concatenate([[closes[0]], closes[:-1]])
-                result = _scan_ticker(closes, highs, lows, vols, dates)
+                result = _scan_ticker(closes, highs, lows, vols, dates, opens=opens)
                 if result is None:
                     continue
                 sector = sectors.get(ticker, "NSE")
@@ -219,11 +219,18 @@ def show():
             st.divider()
             st.caption("Signal counts across all strategies:")
             c1, c2, c3, c4 = st.columns(4)
-            for col, label, key in [(c1, "JNSAR", "jnsar_sig"), (c2, "J10SAR", "j10_sig"),
-                                     (c3, "MA Xover", "ma_sig"), (c4, "LRHR", "lrhr_sig")]:
-                cnt = sum(1 for _, (closes, highs, lows, vols, dates) in all_data.items()
-                          if (r := _scan_ticker(closes, highs, lows, vols, dates)) and r[key] != "NONE")
-                col.metric(label, cnt)
+            counts = {"jnsar_sig": 0, "j10_sig": 0, "ma_sig": 0, "lrhr_sig": 0}
+            for _, (closes, highs, lows, vols, dates) in all_data.items():
+                opens = np.concatenate([[closes[0]], closes[:-1]])
+                r = _scan_ticker(closes, highs, lows, vols, dates, opens=opens)
+                if r:
+                    for key in counts:
+                        if r[key] != "NONE":
+                            counts[key] += 1
+            c1.metric("JNSAR", counts["jnsar_sig"])
+            c2.metric("J10SAR", counts["j10_sig"])
+            c3.metric("MA Xover", counts["ma_sig"])
+            c4.metric("LRHR", counts["lrhr_sig"])
 
     # Open chart popup when a ticker is selected
     if st.session_state.daily_chart_ticker:

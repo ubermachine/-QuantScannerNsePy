@@ -7,6 +7,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from core import get_stock_chart, _conn
 
 
+@st.cache_data
 def _get_all_tickers() -> list:
     con = _conn()
     rows = con.execute("SELECT Ticker FROM StockMetadatas ORDER BY Ticker").fetchall()

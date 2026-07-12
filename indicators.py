@@ -50,8 +50,9 @@ def jnsar(closes: np.ndarray, highs: np.ndarray, lows: np.ndarray) -> np.ndarray
     if n < 15:
         return out
     he5, le5, ce5 = ema(highs, 5), ema(lows, 5), ema(closes, 5)
-    for i in range(4, n):
-        out[i] = round((he5[i - 4:i + 1].sum() + le5[i - 4:i + 1].sum() + ce5[i - 4:i + 1].sum()) / 15.0, 2)
+    total_sum = he5 + le5 + ce5
+    r_sum = np.convolve(total_sum, np.ones(5), mode='valid')
+    out[4:] = np.round(r_sum / 15.0, 2)
     out[:4] = closes[:4]
     return out
 
@@ -61,11 +62,7 @@ def jnsar_last(closes: np.ndarray, highs: np.ndarray, lows: np.ndarray) -> float
     n = len(closes)
     if n < 15:
         return float(closes[-1]) if n > 0 else 0.0
-    he5, le5, ce5 = ema(highs, 5), ema(lows, 5), ema(closes, 5)
-    h_sum = float(he5[4:5].sum() if n == 5 else he5[-5:].sum())
-    l_sum = float(le5[-5:].sum())
-    c_sum = float(ce5[-5:].sum())
-    return round((h_sum + l_sum + c_sum) / 15.0, 2)
+    return float(jnsar(closes, highs, lows)[-1])
 
 
 def atr(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray, period: int = 14) -> np.ndarray:
@@ -173,8 +170,8 @@ def rsi(closes: np.ndarray, period: int = 14) -> np.ndarray:
     if n <= period:
         return out
     changes = np.diff(closes)
-    gains = np.where(changes > 0, changes, 0)
-    losses = np.where(changes < 0, -changes, 0)
+    gains = np.where(changes > 0, changes, 0.0)
+    losses = np.where(changes < 0, -changes, 0.0)
     avg_g = float(gains[:period].mean())
     avg_l = float(losses[:period].mean())
     out[period] = 100 if avg_l == 0 else 100 - 100 / (1 + avg_g / avg_l)
@@ -188,16 +185,11 @@ def rsi(closes: np.ndarray, period: int = 14) -> np.ndarray:
 
 
 def rsi_last(closes: np.ndarray, period: int = 14) -> float:
-    """Only the last RSI value (avoids full array alloc + loop)."""
+    """Only the last RSI value."""
     n = len(closes)
     if n <= period:
         return 50.0
-    changes = np.diff(closes)
-    gains = np.where(changes > 0, changes, 0)
-    losses = np.where(changes < 0, -changes, 0)
-    avg_g = float(gains[-period:].mean())
-    avg_l = float(losses[-period:].mean())
-    return 100.0 if avg_l == 0 else 100.0 - 100.0 / (1.0 + avg_g / avg_l)
+    return float(rsi(closes, period)[-1])
 
 
 def adx(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray, period: int = 14) -> np.ndarray:
@@ -240,26 +232,19 @@ def adx_last(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray, period: in
     n = len(closes)
     if n < period * 2:
         return 0.0
-    tr = np.maximum(highs[1:] - lows[1:],
-                    np.maximum(np.abs(highs[1:] - closes[:-1]),
-                               np.abs(lows[1:] - closes[:-1])))
-    up = np.diff(highs)
-    down = -np.diff(lows)
-    p_dm = np.where((up > down) & (up > 0), up, 0)
-    m_dm = np.where((down > up) & (down > 0), down, 0)
-    s_tr = float(tr[:period].sum())
-    s_p = float(p_dm[:period].sum())
-    s_m = float(m_dm[:period].sum())
-    for i in range(period, n):
-        if i > period:
-            idx = i - 1
-            s_tr = s_tr - s_tr / period + float(tr[idx])
-            s_p = s_p - s_p / period + float(p_dm[idx])
-            s_m = s_m - s_m / period + float(m_dm[idx])
-    pdi = 100 * s_p / s_tr if s_tr > 0 else 0
-    mdi = 100 * s_m / s_tr if s_tr > 0 else 0
-    di_sum = pdi + mdi
-    return 0.0 if di_sum == 0 else 100 * abs(pdi - mdi) / di_sum
+    return float(adx(highs, lows, closes, period)[-1])
+
+
+def bollinger(closes: np.ndarray, period: int = 20, mult: float = 2.0) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """(upper, middle, lower) arrays."""
+    n = len(closes)
+    u, m, lw = np.zeros(n), np.zeros(n), np.zeros(n)
+    for i in range(period - 1, n):
+        s = closes[i - period + 1:i + 1]
+        mn = float(s.mean())
+        sd = float(s.std(ddof=0))
+        m[i], u[i], lw[i] = mn, mn + mult * sd, mn - mult * sd
+    return (u, m, lw)
 
 
 def bollinger_last(closes: np.ndarray, period: int = 20, mult: float = 2.0) -> tuple[float, float, float]:
@@ -273,6 +258,20 @@ def bollinger_last(closes: np.ndarray, period: int = 20, mult: float = 2.0) -> t
     return (mn + mult * sd, mn, mn - mult * sd)
 
 
+def cmf(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray, volumes: np.ndarray,
+        period: int = 21) -> np.ndarray:
+    """Chaikin Money Flow array."""
+    n = len(closes)
+    out = np.zeros(n)
+    if n < period:
+        return out
+    mfv = ((closes - lows) - (highs - closes)) / (highs - lows + 1e-10) * volumes
+    for i in range(period - 1, n):
+        vol_sum = float(volumes[i - period + 1:i + 1].sum())
+        out[i] = float(mfv[i - period + 1:i + 1].sum()) / vol_sum if vol_sum > 0 else 0
+    return out
+
+
 def cmf_last(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray,
              volumes: np.ndarray, period: int = 21) -> float:
     """Only the last Chaikin Money Flow value."""
@@ -284,32 +283,6 @@ def cmf_last(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray,
     return float(mfv.sum()) / vol_sum if vol_sum > 0 else 0.0
 
 
-def keltner_last(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray,
-                 period: int = 20, mult: float = 1.5) -> tuple[float, float, float]:
-    """Only the last (upper, middle, lower) Keltner channel values."""
-    n = len(closes)
-    if n < period:
-        return (0.0, 0.0, 0.0)
-    mid = ema_last(closes, period)
-    tr = max(highs[-1] - lows[-1], abs(highs[-1] - closes[-2]), abs(lows[-1] - closes[-2]))
-    atr_s = np.zeros(period)
-    atr_s[0] = highs[-period] - lows[-period]
-    for i in range(1, period):
-        atr_s[i] = max(highs[-period + i] - lows[-period + i], abs(highs[-period + i] - closes[-period + i - 1]), abs(lows[-period + i] - closes[-period + i - 1]))
-    atr_val = float(atr_s.mean())
-    return (mid + mult * atr_val, mid, mid - mult * atr_val)
-def bollinger(closes: np.ndarray, period: int = 20, mult: float = 2.0) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """(upper, middle, lower) arrays."""
-    n = len(closes)
-    u, m, lw = np.zeros(n), np.zeros(n), np.zeros(n)
-    for i in range(period - 1, n):
-        s = closes[i - period + 1:i + 1]
-        mn = float(s.mean())
-        sd = float(s.std(ddof=0))
-        m[i], u[i], lw[i] = mn, mn + mult * sd, mn - mult * sd
-    return (u, m, lw)
-
-
 def keltner(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray,
             period: int = 20, mult: float = 1.5) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """(upper, middle, lower) arrays."""
@@ -317,12 +290,24 @@ def keltner(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray,
     mid = ema(closes, period)
     tr = np.zeros(n)
     tr[0] = highs[0] - lows[0]
-    for i in range(1, n):
-        tr[i] = max(highs[i] - lows[i], abs(highs[i] - closes[i - 1]), abs(lows[i] - closes[i - 1]))
+    if n > 1:
+        tr[1:] = np.maximum(highs[1:] - lows[1:],
+                            np.maximum(np.abs(highs[1:] - closes[:-1]),
+                                       np.abs(lows[1:] - closes[:-1])))
     atr_arr = ema(tr, period)
-    u = np.where(mid != 0, mid + mult * atr_arr, 0)
-    lw = np.where(mid != 0, mid - mult * atr_arr, 0)
+    u = np.where(mid != 0, mid + mult * atr_arr, 0.0)
+    lw = np.where(mid != 0, mid - mult * atr_arr, 0.0)
     return (u, mid, lw)
+
+
+def keltner_last(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray,
+                 period: int = 20, mult: float = 1.5) -> tuple[float, float, float]:
+    """Only the last (upper, middle, lower) Keltner channel values."""
+    n = len(closes)
+    if n < period:
+        return (0.0, 0.0, 0.0)
+    u, mid, lw = keltner(highs, lows, closes, period, mult)
+    return (float(u[-1]), float(mid[-1]), float(lw[-1]))
 
 
 def z_score_last(closes: np.ndarray, period: int = 50) -> float:
@@ -349,7 +334,6 @@ def ytd_vwap(closes: np.ndarray, dates: np.ndarray, volumes: np.ndarray) -> floa
     """Year-to-date VWAP using only this year's data."""
     if len(closes) == 0:
         return 0.0
-    # DuckDB dates are datetime; find current year start
     try:
         yr = dates[-1].year if hasattr(dates[-1], 'year') else 2025
     except (IndexError, AttributeError):
@@ -371,23 +355,10 @@ def chandelier_exit(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray,
     if n < period:
         return out
     atr_arr = atr(highs, lows, closes, period)
-    for i in range(period, n):
-        highest = float(highs[i - period + 1:i + 1].max())
-        out[i] = highest - mult * atr_arr[i]
-    return out
-
-
-def cmf(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray, volumes: np.ndarray,
-        period: int = 21) -> np.ndarray:
-    """Chaikin Money Flow array."""
-    n = len(closes)
-    out = np.zeros(n)
-    if n < period:
-        return out
-    mfv = ((closes - lows) - (highs - closes)) / (highs - lows + 1e-10) * volumes
-    for i in range(period - 1, n):
-        vol_sum = float(volumes[i - period + 1:i + 1].sum())
-        out[i] = float(mfv[i - period + 1:i + 1].sum()) / vol_sum if vol_sum > 0 else 0
+    from numpy.lib.stride_tricks import sliding_window_view
+    high_windows = sliding_window_view(highs, period)
+    highest = high_windows.max(axis=-1)
+    out[period:] = highest[1:] - mult * atr_arr[period:]
     return out
 
 
@@ -395,14 +366,16 @@ def obv(closes: np.ndarray, volumes: np.ndarray) -> np.ndarray:
     """On-Balance Volume array."""
     n = len(closes)
     out = np.zeros(n)
+    if n == 0:
+        return out
     out[0] = float(volumes[0])
-    for i in range(1, n):
-        if closes[i] > closes[i - 1]:
-            out[i] = out[i - 1] + float(volumes[i])
-        elif closes[i] < closes[i - 1]:
-            out[i] = out[i - 1] - float(volumes[i])
-        else:
-            out[i] = out[i - 1]
+    if n < 2:
+        return out
+    diff = np.diff(closes)
+    direction = np.zeros(n - 1)
+    direction[diff > 0] = 1.0
+    direction[diff < 0] = -1.0
+    out[1:] = np.cumsum(direction * volumes[1:]) + out[0]
     return out
 
 
@@ -441,12 +414,10 @@ def j10sar(closes: np.ndarray) -> tuple:
 def daily_swing_fib618(closes: np.ndarray, highs: np.ndarray, lows: np.ndarray,
                        lookback: int = 60) -> tuple:
     """61.8% retracement from swing high/low over a rolling lookback window.
-    Returns (fib_618, swing_high, swing_low) as floats.
-    For LRHR (Low-Risk High-Reward) daily reversal entries."""
+    Returns (fib_618, swing_high, swing_low) as floats."""
     n = len(closes)
     if n < 10:
         return (0, 0, 0)
-    # Work on the last `lookback` bars
     start = max(0, n - lookback)
     c, h, l = closes[start:], highs[start:], lows[start:]
     sh, sl = float(h[0]), float(l[0])
