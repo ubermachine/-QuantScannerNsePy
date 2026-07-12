@@ -106,20 +106,9 @@ def _get_parquet_path(table_name: str) -> str:
 
 def _ensure_db():
     """Recreate tables in DuckDB from central Parquet files (local or remote)."""
-    # If DB exists, we still want to make sure the tables are initialized
     con = duckdb.connect(DB)
     try:
-        # Load httpfs if we have any remote url
-        has_http = any(_get_parquet_path(t).startswith("http") for t in _PARQUET_TABLES.keys())
-        if has_http:
-            try:
-                con.execute("INSTALL httpfs; LOAD httpfs;")
-            except Exception as e:
-                print(f"Failed to load httpfs extension: {e}")
-            
         for table in _PARQUET_TABLES.keys():
-            # Check if table already exists. In TDD mock test we drop it,
-            # but in production we only create if it doesn't exist to save startup time.
             exists = con.execute(
                 "SELECT count(*) FROM information_schema.tables WHERE table_name = ? AND table_type = 'BASE TABLE'",
                 [table]
@@ -127,10 +116,21 @@ def _ensure_db():
             
             if not exists:
                 path = _get_parquet_path(table)
-                con.execute(f"CREATE TABLE \"{table}\" AS SELECT * FROM read_parquet('{path}')")
+                if path.startswith("http"):
+                    print(f"Loading remote table {table} via pandas from {path}...")
+                    try:
+                        df_temp = pd.read_parquet(path)
+                        con.register('df_temp', df_temp)
+                        con.execute(f"CREATE TABLE \"{table}\" AS SELECT * FROM df_temp")
+                        con.unregister('df_temp')
+                    except Exception as pe:
+                        raise ValueError(f"Failed to load remote table {table} via pandas: {pe}")
+                else:
+                    con.execute(f"CREATE TABLE \"{table}\" AS SELECT * FROM read_parquet('{path}')")
         con.commit()
     finally:
         con.close()
+
 
 
 def _export_parquet(con=None):
