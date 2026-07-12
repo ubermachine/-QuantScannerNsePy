@@ -302,11 +302,21 @@ def bollinger(closes: np.ndarray, period: int = 20, mult: float = 2.0) -> Tuple[
     """(upper, middle, lower) arrays."""
     n = len(closes)
     u, m, lw = np.zeros(n), np.zeros(n), np.zeros(n)
-    for i in range(period - 1, n):
-        s = closes[i - period + 1:i + 1]
-        mn = float(s.mean())
-        sd = float(s.std(ddof=0))
-        m[i], u[i], lw[i] = mn, mn + mult * sd, mn - mult * sd
+
+    if n < period:
+        return (u, m, lw)
+
+    # ⚡ Bolt optimization: Use np.lib.stride_tricks.sliding_window_view
+    # to compute rolling mean and std natively in C without Python loop overhead
+    windows = np.lib.stride_tricks.sliding_window_view(closes, period)
+
+    mn = np.mean(windows, axis=1)
+    sd = np.std(windows, axis=1, ddof=0)
+
+    m[period - 1:] = mn
+    u[period - 1:] = mn + mult * sd
+    lw[period - 1:] = mn - mult * sd
+
     return (u, m, lw)
 
 
@@ -315,10 +325,16 @@ def keltner(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray,
     """(upper, middle, lower) arrays."""
     n = len(closes)
     mid = ema(closes, period)
-    tr = np.zeros(n)
+    if n == 0:
+        return (np.zeros(0), mid, np.zeros(0))
+
+    # ⚡ Bolt optimization: Vectorize True Range calculation
+    # instead of doing it bar by bar in a loop
+    tr = np.maximum(highs - lows,
+                    np.maximum(np.abs(highs - np.roll(closes, 1)),
+                               np.abs(lows - np.roll(closes, 1))))
     tr[0] = highs[0] - lows[0]
-    for i in range(1, n):
-        tr[i] = max(highs[i] - lows[i], abs(highs[i] - closes[i - 1]), abs(lows[i] - closes[i - 1]))
+
     atr_arr = ema(tr, period)
     u = np.where(mid != 0, mid + mult * atr_arr, 0)
     lw = np.where(mid != 0, mid - mult * atr_arr, 0)
@@ -371,9 +387,12 @@ def chandelier_exit(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray,
     if n < period:
         return out
     atr_arr = atr(highs, lows, closes, period)
-    for i in range(period, n):
-        highest = float(highs[i - period + 1:i + 1].max())
-        out[i] = highest - mult * atr_arr[i]
+
+    # ⚡ Bolt optimization: Use sliding_window_view for fast rolling maximum
+    windows = np.lib.stride_tricks.sliding_window_view(highs, period)
+    highests = np.max(windows, axis=1)
+
+    out[period:] = highests[1:] - mult * atr_arr[period:]
     return out
 
 
@@ -385,25 +404,28 @@ def cmf(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray, volumes: np.nda
     if n < period:
         return out
     mfv = ((closes - lows) - (highs - closes)) / (highs - lows + 1e-10) * volumes
-    for i in range(period - 1, n):
-        vol_sum = float(volumes[i - period + 1:i + 1].sum())
-        out[i] = float(mfv[i - period + 1:i + 1].sum()) / vol_sum if vol_sum > 0 else 0
+
+    # ⚡ Bolt optimization: np.convolve(mode='valid') is vastly faster
+    # than calling sum() on slices inside a loop
+    mfv_sum = np.convolve(mfv, np.ones(period), mode='valid')
+    vol_sum = np.convolve(volumes, np.ones(period), mode='valid')
+
+    valid_idx = vol_sum > 0
+    out[period - 1:][valid_idx] = mfv_sum[valid_idx] / vol_sum[valid_idx]
     return out
 
 
 def obv(closes: np.ndarray, volumes: np.ndarray) -> np.ndarray:
     """On-Balance Volume array."""
     n = len(closes)
-    out = np.zeros(n)
-    out[0] = float(volumes[0])
-    for i in range(1, n):
-        if closes[i] > closes[i - 1]:
-            out[i] = out[i - 1] + float(volumes[i])
-        elif closes[i] < closes[i - 1]:
-            out[i] = out[i - 1] - float(volumes[i])
-        else:
-            out[i] = out[i - 1]
-    return out
+    if n == 0:
+        return np.array([])
+
+    # ⚡ Bolt optimization: Avoid iterative +/- branches by multiplying
+    # the volume by the sign of the close difference, then cumulative sum
+    signs = np.sign(np.diff(closes))
+    signed_volumes = np.insert(signs * volumes[1:], 0, volumes[0])
+    return np.cumsum(signed_volumes)
 
 
 def rolling_sharpe(closes: np.ndarray, period: int = 60) -> float:
