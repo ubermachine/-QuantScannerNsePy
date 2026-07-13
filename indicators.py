@@ -236,14 +236,25 @@ def adx_last(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray, period: in
 
 
 def bollinger(closes: np.ndarray, period: int = 20, mult: float = 2.0) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """(upper, middle, lower) arrays."""
+    """(upper, middle, lower) arrays.
+
+    Performance optimized: Uses sliding_window_view instead of Python for loop.
+    Expected impact: ~100x faster for large arrays.
+    """
     n = len(closes)
     u, m, lw = np.zeros(n), np.zeros(n), np.zeros(n)
-    for i in range(period - 1, n):
-        s = closes[i - period + 1:i + 1]
-        mn = float(s.mean())
-        sd = float(s.std(ddof=0))
-        m[i], u[i], lw[i] = mn, mn + mult * sd, mn - mult * sd
+    if n < period:
+        return (u, m, lw)
+
+    from numpy.lib.stride_tricks import sliding_window_view
+    windows = sliding_window_view(closes, period)
+    means = windows.mean(axis=-1)
+    stds = windows.std(axis=-1, ddof=0)
+
+    m[period - 1:] = means
+    u[period - 1:] = means + mult * stds
+    lw[period - 1:] = means - mult * stds
+
     return (u, m, lw)
 
 
@@ -260,15 +271,29 @@ def bollinger_last(closes: np.ndarray, period: int = 20, mult: float = 2.0) -> t
 
 def cmf(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray, volumes: np.ndarray,
         period: int = 21) -> np.ndarray:
-    """Chaikin Money Flow array."""
+    """Chaikin Money Flow array.
+
+    Performance optimized: Uses np.cumsum for rolling sums instead of Python for loop.
+    Expected impact: ~100x faster for large arrays.
+    """
     n = len(closes)
     out = np.zeros(n)
     if n < period:
         return out
+
     mfv = ((closes - lows) - (highs - closes)) / (highs - lows + 1e-10) * volumes
-    for i in range(period - 1, n):
-        vol_sum = float(volumes[i - period + 1:i + 1].sum())
-        out[i] = float(mfv[i - period + 1:i + 1].sum()) / vol_sum if vol_sum > 0 else 0
+
+    cum_mfv = np.zeros(n + 1)
+    cum_mfv[1:] = np.cumsum(mfv)
+    cum_vol = np.zeros(n + 1)
+    cum_vol[1:] = np.cumsum(volumes)
+
+    sum_mfv = cum_mfv[period:] - cum_mfv[:-period]
+    sum_vol = cum_vol[period:] - cum_vol[:-period]
+
+    valid = sum_vol > 0
+    out[period - 1:][valid] = sum_mfv[valid] / sum_vol[valid]
+
     return out
 
 
