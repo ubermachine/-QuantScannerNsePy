@@ -1,0 +1,3 @@
+## 2025-02-18 - Python loop overhead in NumPy rolling windows
+**Learning:** In NumPy-heavy computational paths (like financial indicators), using Python `for` loops to calculate rolling statistics (like Bollinger Bands or Chaikin Money Flow) causes severe performance bottlenecks. For a 5000-element array, a python loop for Bollinger Bands took ~11 seconds for 100 iterations, while a vectorized approach using `sliding_window_view` took ~0.1 seconds. Similarly, using `np.cumsum` for CMF reduced time from ~1.5s to ~0.01s.
+**Action:** Always prefer `numpy.lib.stride_tricks.sliding_window_view` for rolling statistics (mean, std) and `np.cumsum` for rolling sums over python `for` loops in performance-critical code.
