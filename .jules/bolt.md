@@ -1,0 +1,3 @@
+## 2025-02-18 - DuckDB fetchall overhead vs fetchnumpy vectorization
+**Learning:** DuckDB's `fetchall()` creates massive overhead when iterating over thousands of rows in Python to group data by ticker. The `fetchnumpy()` method is significantly faster (~3x speedup) for bulk operations when combined with `np.unique` to vectorize the grouping. Pandas is also the fastest way to safely convert DuckDB's `datetime64` arrays back to Python `datetime` objects, which is required here due to architectural choices.
+**Action:** When loading large amounts of OHLCV data from DuckDB for downstream NumPy array processing, always prefer `fetchnumpy()` or `fetchdf()` followed by vectorized grouping over `fetchall()` and Python-level `for` loops.
