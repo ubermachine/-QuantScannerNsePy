@@ -1,0 +1,3 @@
+## 2024-05-18 - Replacing Python loops with vectorized stride tricks for rolling window indicators
+**Learning:** In NumPy-based indicator implementations (e.g. `bollinger`, `cmf`), explicit Python loops over arrays to compute rolling means, sums, and standard deviations cause severe performance overhead (e.g., O(N) loop evaluations in Python rather than C).
+**Action:** Always prefer `numpy.lib.stride_tricks.sliding_window_view` to fully vectorize rolling window calculations. This can deliver >30x speedups with clean and readable code by computing operations like `.mean(axis=-1)` directly on the window views.
