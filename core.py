@@ -213,40 +213,45 @@ def _batch_load_all(min_bars: int = 200, lookback: int = 250) -> dict:
     Tickers with fewer than min_bars are excluded.
     """
     con = _conn()
-    rows = con.execute("""
+    arrays = con.execute("""
         SELECT Ticker, Date, Close, High, Low, Volume FROM (
             SELECT *, ROW_NUMBER() OVER (PARTITION BY Ticker ORDER BY Date DESC) as rn
             FROM DailyBars
         ) sub WHERE rn <= ?
         ORDER BY Ticker, Date
-    """, [lookback]).fetchall()
+    """, [lookback]).fetchnumpy()
     con.close()
 
-    # Organize rows by ticker
-    raw: dict[str, list] = {}
-    for row in rows:
-        t = row[0]
-        if t not in raw:
-            raw[t] = {'dates': [], 'closes': [], 'highs': [], 'lows': [], 'vols': []}
-        raw[t]['dates'].append(row[1])
-        raw[t]['closes'].append(row[2])
-        raw[t]['highs'].append(row[3])
-        raw[t]['lows'].append(row[4])
-        raw[t]['vols'].append(row[5])
+    tickers = arrays['Ticker']
+    dates = arrays['Date']
 
-    # Convert to numpy arrays, filter by min_bars
+    if dates.dtype.kind == 'M':
+        dates = pd.to_datetime(dates).to_pydatetime()
+
+    closes = arrays['Close'].astype(float)
+    highs = arrays['High'].astype(float)
+    lows = arrays['Low'].astype(float)
+    vols = arrays['Volume'].astype(float)
+
+    if len(tickers) == 0:
+        return {}
+
+    # Faster boundary detection using np.where instead of np.unique(return_index=True)
+    splits = np.where(tickers[:-1] != tickers[1:])[0] + 1
+
+    t_closes = np.split(closes, splits)
+    t_highs = np.split(highs, splits)
+    t_lows = np.split(lows, splits)
+    t_vols = np.split(vols, splits)
+    t_dates = np.split(dates, splits)
+
+    uniq_tickers = tickers[np.insert(splits, 0, 0)]
+
     result = {}
-    for t, d in raw.items():
-        n = len(d['closes'])
-        if n < min_bars:
-            continue
-        result[t] = (
-            np.array(d['closes'], dtype=float),
-            np.array(d['highs'], dtype=float),
-            np.array(d['lows'], dtype=float),
-            np.array(d['vols'], dtype=float),
-            np.array(d['dates']),
-        )
+    for i, t in enumerate(uniq_tickers):
+        if len(t_closes[i]) >= min_bars:
+            result[str(t)] = (t_closes[i], t_highs[i], t_lows[i], t_vols[i], t_dates[i])
+
     return result
 
 
