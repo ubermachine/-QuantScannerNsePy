@@ -266,9 +266,17 @@ def cmf(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray, volumes: np.nda
     if n < period:
         return out
     mfv = ((closes - lows) - (highs - closes)) / (highs - lows + 1e-10) * volumes
-    for i in range(period - 1, n):
-        vol_sum = float(volumes[i - period + 1:i + 1].sum())
-        out[i] = float(mfv[i - period + 1:i + 1].sum()) / vol_sum if vol_sum > 0 else 0
+
+    from numpy.lib.stride_tricks import sliding_window_view
+    mfv_windows = sliding_window_view(mfv, period)
+    vol_windows = sliding_window_view(volumes, period)
+
+    mfv_sums = mfv_windows.sum(axis=-1)
+    vol_sums = vol_windows.sum(axis=-1)
+
+    valid = vol_sums > 0
+    out[period - 1:][valid] = mfv_sums[valid] / vol_sums[valid]
+
     return out
 
 
