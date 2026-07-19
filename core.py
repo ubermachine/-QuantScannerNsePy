@@ -213,39 +213,49 @@ def _batch_load_all(min_bars: int = 200, lookback: int = 250) -> dict:
     Tickers with fewer than min_bars are excluded.
     """
     con = _conn()
-    rows = con.execute("""
+    res = con.execute("""
         SELECT Ticker, Date, Close, High, Low, Volume FROM (
             SELECT *, ROW_NUMBER() OVER (PARTITION BY Ticker ORDER BY Date DESC) as rn
             FROM DailyBars
         ) sub WHERE rn <= ?
         ORDER BY Ticker, Date
-    """, [lookback]).fetchall()
+    """, [lookback]).fetchnumpy()
     con.close()
 
-    # Organize rows by ticker
-    raw: dict[str, list] = {}
-    for row in rows:
-        t = row[0]
-        if t not in raw:
-            raw[t] = {'dates': [], 'closes': [], 'highs': [], 'lows': [], 'vols': []}
-        raw[t]['dates'].append(row[1])
-        raw[t]['closes'].append(row[2])
-        raw[t]['highs'].append(row[3])
-        raw[t]['lows'].append(row[4])
-        raw[t]['vols'].append(row[5])
+    tickers = res['Ticker']
+    if len(tickers) == 0:
+        return {}
 
-    # Convert to numpy arrays, filter by min_bars
+    # DuckDB's fetchnumpy() returns dates as numpy.datetime64.
+    # Convert to standard Python datetime objects to maintain downstream compatibility (e.g., .year attribute).
+    dates = pd.to_datetime(res['Date']).to_pydatetime()
+    closes = res['Close']
+    highs = res['High']
+    lows = res['Low']
+    vols = res['Volume']
+
+    # Vectorized boundary detection instead of Python loops
+    boundaries = np.where(tickers[:-1] != tickers[1:])[0] + 1
+
+    split_tickers = np.split(tickers, boundaries)
+    split_dates = np.split(dates, boundaries)
+    split_closes = np.split(closes, boundaries)
+    split_highs = np.split(highs, boundaries)
+    split_lows = np.split(lows, boundaries)
+    split_vols = np.split(vols, boundaries)
+
     result = {}
-    for t, d in raw.items():
-        n = len(d['closes'])
-        if n < min_bars:
+    for i in range(len(split_tickers)):
+        t = split_tickers[i][0]
+        c = split_closes[i]
+        if len(c) < min_bars:
             continue
         result[t] = (
-            np.array(d['closes'], dtype=float),
-            np.array(d['highs'], dtype=float),
-            np.array(d['lows'], dtype=float),
-            np.array(d['vols'], dtype=float),
-            np.array(d['dates']),
+            c.astype(float),
+            split_highs[i].astype(float),
+            split_lows[i].astype(float),
+            split_vols[i].astype(float),
+            split_dates[i]
         )
     return result
 
