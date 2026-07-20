@@ -239,11 +239,18 @@ def bollinger(closes: np.ndarray, period: int = 20, mult: float = 2.0) -> Tuple[
     """(upper, middle, lower) arrays."""
     n = len(closes)
     u, m, lw = np.zeros(n), np.zeros(n), np.zeros(n)
-    for i in range(period - 1, n):
-        s = closes[i - period + 1:i + 1]
-        mn = float(s.mean())
-        sd = float(s.std(ddof=0))
-        m[i], u[i], lw[i] = mn, mn + mult * sd, mn - mult * sd
+    if n < period:
+        return (u, m, lw)
+
+    # Vectorized optimization: sliding window mean and std avoids slow Python loop
+    from numpy.lib.stride_tricks import sliding_window_view
+    windows = sliding_window_view(closes, period)
+    mn = windows.mean(axis=-1)
+    sd = windows.std(axis=-1, ddof=0)
+
+    m[period - 1:] = mn
+    u[period - 1:] = mn + mult * sd
+    lw[period - 1:] = mn - mult * sd
     return (u, m, lw)
 
 
