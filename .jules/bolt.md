@@ -1,0 +1,3 @@
+## 2025-02-12 - Vectorization over Loops for Rolling Windows
+**Learning:** Python-level `for` loops used for rolling array calculations (like Bollinger Bands or Chaikin Money Flow) are a significant performance bottleneck in NumPy due to repetitive Python object overhead and lack of vectorization. `numpy.lib.stride_tricks.sliding_window_view` provides a >100x speedup by creating memory-efficient sliding views that can be passed directly to NumPy's vectorized C-level reduction functions (like `.mean()`, `.std()`, and `.sum()`).
+**Action:** When implementing or optimizing performance-critical rolling array operations in NumPy, always prefer vectorized functions like `sliding_window_view`, `np.convolve`, or `np.cumsum` to avoid the severe overhead of Python loops.
