@@ -239,11 +239,15 @@ def bollinger(closes: np.ndarray, period: int = 20, mult: float = 2.0) -> Tuple[
     """(upper, middle, lower) arrays."""
     n = len(closes)
     u, m, lw = np.zeros(n), np.zeros(n), np.zeros(n)
-    for i in range(period - 1, n):
-        s = closes[i - period + 1:i + 1]
-        mn = float(s.mean())
-        sd = float(s.std(ddof=0))
-        m[i], u[i], lw[i] = mn, mn + mult * sd, mn - mult * sd
+    if n < period:
+        return (u, m, lw)
+    from numpy.lib.stride_tricks import sliding_window_view
+    windows = sliding_window_view(closes, period)
+    means = windows.mean(axis=-1)
+    stds = windows.std(axis=-1, ddof=0)
+    m[period - 1:] = means
+    u[period - 1:] = means + mult * stds
+    lw[period - 1:] = means - mult * stds
     return (u, m, lw)
 
 
@@ -266,9 +270,12 @@ def cmf(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray, volumes: np.nda
     if n < period:
         return out
     mfv = ((closes - lows) - (highs - closes)) / (highs - lows + 1e-10) * volumes
-    for i in range(period - 1, n):
-        vol_sum = float(volumes[i - period + 1:i + 1].sum())
-        out[i] = float(mfv[i - period + 1:i + 1].sum()) / vol_sum if vol_sum > 0 else 0
+
+    # Use convolve for rolling sum
+    mfv_sum = np.convolve(mfv, np.ones(period), mode='valid')
+    vol_sum = np.convolve(volumes, np.ones(period), mode='valid')
+
+    out[period - 1:] = np.divide(mfv_sum, vol_sum, out=np.zeros_like(mfv_sum), where=vol_sum>0)
     return out
 
 
