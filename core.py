@@ -211,41 +211,52 @@ def _batch_load_all(min_bars: int = 200, lookback: int = 250) -> dict:
     """Load OHLCV data for ALL tickers in one query.
     Returns dict: ticker -> (closes, highs, lows, vols, dates) as numpy arrays.
     Tickers with fewer than min_bars are excluded.
+
+    ⚡ Bolt Optimization: Replace fetchall() and Python loops with fetchnumpy()
+    and vectorized np.split for significantly faster data loading.
     """
     con = _conn()
-    rows = con.execute("""
+    data = con.execute("""
         SELECT Ticker, Date, Close, High, Low, Volume FROM (
             SELECT *, ROW_NUMBER() OVER (PARTITION BY Ticker ORDER BY Date DESC) as rn
             FROM DailyBars
         ) sub WHERE rn <= ?
         ORDER BY Ticker, Date
-    """, [lookback]).fetchall()
+    """, [lookback]).fetchnumpy()
     con.close()
 
-    # Organize rows by ticker
-    raw: dict[str, list] = {}
-    for row in rows:
-        t = row[0]
-        if t not in raw:
-            raw[t] = {'dates': [], 'closes': [], 'highs': [], 'lows': [], 'vols': []}
-        raw[t]['dates'].append(row[1])
-        raw[t]['closes'].append(row[2])
-        raw[t]['highs'].append(row[3])
-        raw[t]['lows'].append(row[4])
-        raw[t]['vols'].append(row[5])
+    tickers = data['Ticker']
+    if len(tickers) == 0:
+        return {}
 
-    # Convert to numpy arrays, filter by min_bars
+    # DuckDB fetchnumpy() returns dates as numpy.datetime64. Convert to standard pydatetime.
+    dates = pd.to_datetime(data['Date']).to_pydatetime()
+    closes = data['Close'].astype(float)
+    highs = data['High'].astype(float)
+    lows = data['Low'].astype(float)
+    vols = data['Volume'].astype(float)
+
+    # Find boundaries where ticker changes
+    boundaries = np.where(tickers[:-1] != tickers[1:])[0] + 1
+
+    t_splits = np.split(tickers, boundaries)
+    d_splits = np.split(dates, boundaries)
+    c_splits = np.split(closes, boundaries)
+    h_splits = np.split(highs, boundaries)
+    l_splits = np.split(lows, boundaries)
+    v_splits = np.split(vols, boundaries)
+
     result = {}
-    for t, d in raw.items():
-        n = len(d['closes'])
-        if n < min_bars:
+    for i in range(len(t_splits)):
+        ticker = str(t_splits[i][0])
+        if len(t_splits[i]) < min_bars:
             continue
-        result[t] = (
-            np.array(d['closes'], dtype=float),
-            np.array(d['highs'], dtype=float),
-            np.array(d['lows'], dtype=float),
-            np.array(d['vols'], dtype=float),
-            np.array(d['dates']),
+        result[ticker] = (
+            c_splits[i],
+            h_splits[i],
+            l_splits[i],
+            v_splits[i],
+            d_splits[i]
         )
     return result
 
