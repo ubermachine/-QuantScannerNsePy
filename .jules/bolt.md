@@ -1,0 +1,3 @@
+## 2025-02-18 - DuckDB Data Ingestion Bottleneck
+**Learning:** Using `fetchall()` with Python-level iteration and list appends for grouping DuckDB results by a categorical column (like `Ticker`) is a significant anti-pattern. The object overhead dominates runtime.
+**Action:** Use DuckDB's `fetchnumpy()` combined with vectorized NumPy boundary detection (e.g., `np.where(arr[:-1] != arr[1:])[0] + 1`) and `np.split()` to group data by ticker. This approach avoids Python loops entirely and yields a >2x speedup for data loading. Note that DuckDB dates return as `numpy.datetime64`, which may need conversion via `pandas.to_datetime().to_pydatetime()` if downstream code expects Python `datetime` objects.
