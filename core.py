@@ -213,40 +213,53 @@ def _batch_load_all(min_bars: int = 200, lookback: int = 250) -> dict:
     Tickers with fewer than min_bars are excluded.
     """
     con = _conn()
-    rows = con.execute("""
+
+    # ⚡ Bolt Optimization: Use fetchnumpy() instead of fetchall() to avoid slow Python-level row iteration.
+    # We retrieve columns as direct numpy arrays, which reduces Python object overhead significantly.
+    res = con.execute("""
         SELECT Ticker, Date, Close, High, Low, Volume FROM (
             SELECT *, ROW_NUMBER() OVER (PARTITION BY Ticker ORDER BY Date DESC) as rn
             FROM DailyBars
         ) sub WHERE rn <= ?
         ORDER BY Ticker, Date
-    """, [lookback]).fetchall()
+    """, [lookback]).fetchnumpy()
     con.close()
 
-    # Organize rows by ticker
-    raw: dict[str, list] = {}
-    for row in rows:
-        t = row[0]
-        if t not in raw:
-            raw[t] = {'dates': [], 'closes': [], 'highs': [], 'lows': [], 'vols': []}
-        raw[t]['dates'].append(row[1])
-        raw[t]['closes'].append(row[2])
-        raw[t]['highs'].append(row[3])
-        raw[t]['lows'].append(row[4])
-        raw[t]['vols'].append(row[5])
+    tickers = res['Ticker']
+    dates = res['Date']
+    closes = res['Close']
+    highs = res['High']
+    lows = res['Low']
+    vols = res['Volume']
 
-    # Convert to numpy arrays, filter by min_bars
+    # Convert DuckDB dates (numpy.datetime64) to standard Python datetime objects
+    # to maintain compatibility with downstream codebase functions
+    dates = pd.to_datetime(dates).to_pydatetime()
+
+    if len(tickers) == 0:
+        return {}
+
+    # Use vectorized boundary detection to group arrays by ticker instead of iterating over rows
+    split_idx = np.where(tickers[:-1] != tickers[1:])[0] + 1
+
+    unique_tickers = tickers[np.concatenate(([0], split_idx))]
+
+    closes_split = np.split(closes, split_idx)
+    highs_split = np.split(highs, split_idx)
+    lows_split = np.split(lows, split_idx)
+    vols_split = np.split(vols, split_idx)
+    dates_split = np.split(dates, split_idx)
+
     result = {}
-    for t, d in raw.items():
-        n = len(d['closes'])
-        if n < min_bars:
-            continue
-        result[t] = (
-            np.array(d['closes'], dtype=float),
-            np.array(d['highs'], dtype=float),
-            np.array(d['lows'], dtype=float),
-            np.array(d['vols'], dtype=float),
-            np.array(d['dates']),
-        )
+    for i, t in enumerate(unique_tickers):
+        if len(closes_split[i]) >= min_bars:
+            result[t] = (
+                closes_split[i].astype(float),
+                highs_split[i].astype(float),
+                lows_split[i].astype(float),
+                vols_split[i].astype(float),
+                dates_split[i]
+            )
     return result
 
 
