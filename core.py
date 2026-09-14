@@ -176,19 +176,19 @@ def _closes_hlv(ticker: str, min_bars: int = 200, con=None):
     if con is None:
         con = _conn()
         close_con = True
-    rows = con.execute(
+    res = con.execute(
         "SELECT Date, Close, High, Low, Volume FROM DailyBars WHERE Ticker = ? ORDER BY Date",
         [ticker]
-    ).fetchall()
+    ).fetchnumpy()
     if close_con:
         con.close()
-    if len(rows) < min_bars:
+    if len(res['Date']) < min_bars:
         return None, None, None, None, None
-    dates = np.array([r[0] for r in rows])
-    closes = np.array([float(r[1]) for r in rows], dtype=float)
-    highs = np.array([float(r[2]) for r in rows], dtype=float)
-    lows = np.array([float(r[3]) for r in rows], dtype=float)
-    vols = np.array([float(r[4]) for r in rows], dtype=float)
+    dates = pd.to_datetime(res['Date']).to_pydatetime()
+    closes = res['Close'].astype(float)
+    highs = res['High'].astype(float)
+    lows = res['Low'].astype(float)
+    vols = res['Volume'].astype(float)
     return closes, highs, lows, vols, dates
 
 
@@ -213,40 +213,43 @@ def _batch_load_all(min_bars: int = 200, lookback: int = 250) -> dict:
     Tickers with fewer than min_bars are excluded.
     """
     con = _conn()
-    rows = con.execute("""
+    res = con.execute("""
         SELECT Ticker, Date, Close, High, Low, Volume FROM (
             SELECT *, ROW_NUMBER() OVER (PARTITION BY Ticker ORDER BY Date DESC) as rn
             FROM DailyBars
         ) sub WHERE rn <= ?
         ORDER BY Ticker, Date
-    """, [lookback]).fetchall()
+    """, [lookback]).fetchnumpy()
     con.close()
 
-    # Organize rows by ticker
-    raw: dict[str, list] = {}
-    for row in rows:
-        t = row[0]
-        if t not in raw:
-            raw[t] = {'dates': [], 'closes': [], 'highs': [], 'lows': [], 'vols': []}
-        raw[t]['dates'].append(row[1])
-        raw[t]['closes'].append(row[2])
-        raw[t]['highs'].append(row[3])
-        raw[t]['lows'].append(row[4])
-        raw[t]['vols'].append(row[5])
+    if len(res['Ticker']) == 0:
+        return {}
 
-    # Convert to numpy arrays, filter by min_bars
+    # Extract columns from fetchnumpy() result
+    tickers = res['Ticker']
+    # Convert numpy.datetime64 back to python datetime for compatibility
+    dates = pd.to_datetime(res['Date']).to_pydatetime()
+    closes = res['Close'].astype(float)
+    highs = res['High'].astype(float)
+    lows = res['Low'].astype(float)
+    vols = res['Volume'].astype(float)
+
+    # Fast boundary detection using vectorized numpy array splitting instead of python loops
+    split_indices = np.where(tickers[:-1] != tickers[1:])[0] + 1
+
+    t_splits = np.split(tickers, split_indices)
+    d_splits = np.split(dates, split_indices)
+    c_splits = np.split(closes, split_indices)
+    h_splits = np.split(highs, split_indices)
+    l_splits = np.split(lows, split_indices)
+    v_splits = np.split(vols, split_indices)
+
     result = {}
-    for t, d in raw.items():
-        n = len(d['closes'])
-        if n < min_bars:
+    for t, d, c, h, l, v in zip(t_splits, d_splits, c_splits, h_splits, l_splits, v_splits):
+        if len(c) < min_bars:
             continue
-        result[t] = (
-            np.array(d['closes'], dtype=float),
-            np.array(d['highs'], dtype=float),
-            np.array(d['lows'], dtype=float),
-            np.array(d['vols'], dtype=float),
-            np.array(d['dates']),
-        )
+        result[t[0]] = (c, h, l, v, d)
+
     return result
 
 
@@ -662,30 +665,40 @@ def run_rotation_backtest(params: dict) -> dict:
     capital = float(params.get("starting_capital", 100000))
 
     con = _conn()
-    all_rows = con.execute("SELECT Ticker, Date, Open, Close FROM SectorDailyBars ORDER BY Ticker, Date").fetchall()
+    res = con.execute("SELECT Ticker, Date, Open, Close FROM SectorDailyBars ORDER BY Ticker, Date").fetchnumpy()
     con.close()
-    if not all_rows:
+
+    if len(res['Ticker']) == 0:
         return {"error": "No sector data"}
 
-    grouped = {}
-    for r in all_rows:
-        grouped.setdefault(r[0], []).append(r)
-    grouped = {k: sorted(v, key=lambda x: x[1]) for k, v in grouped.items()}
+    # Extract columns from fetchnumpy() result
+    tickers = res['Ticker']
+    # Convert numpy.datetime64 back to python datetime for compatibility
+    dates = pd.to_datetime(res['Date']).to_pydatetime()
+    opens = res['Open'].astype(float)
+    closes = res['Close'].astype(float)
 
-    # Pre-convert all ticker data to numpy arrays for fast lookups
+    # Fast boundary detection using vectorized numpy array splitting instead of python loops
+    split_indices = np.where(tickers[:-1] != tickers[1:])[0] + 1
+
+    t_splits = np.split(tickers, split_indices)
+    d_splits = np.split(dates, split_indices)
+    o_splits = np.split(opens, split_indices)
+    c_splits = np.split(closes, split_indices)
+
     ticker_data = {}
-    for ticker, bars in grouped.items():
-        ticker_data[ticker] = {
-            "dates": np.array([r[1] for r in bars]),
-            "opens": np.array([float(r[2]) for r in bars]),
-            "closes": np.array([float(r[3]) for r in bars]),
+    for t, d, o, c in zip(t_splits, d_splits, o_splits, c_splits):
+        ticker_data[t[0]] = {
+            "dates": d,
+            "opens": o,
+            "closes": c,
         }
 
-    if "^NSEI" not in grouped:
+    if "^NSEI" not in ticker_data:
         return {"error": "No Nifty index data"}
-    nifty = grouped["^NSEI"]
-    n_closes = np.array([float(r[3]) for r in nifty])  # Close
-    n_dates = [r[1] for r in nifty]
+    nifty_data = ticker_data["^NSEI"]
+    n_closes = nifty_data["closes"]
+    n_dates = nifty_data["dates"]
 
     sector_names = {"^NSEBANK": "Bank", "^CNXAUTO": "Auto", "^CNXIT": "IT",
                     "^CNXPHARMA": "Pharma", "^CNXMETAL": "Metal", "^CNXENERGY": "Energy",
@@ -696,7 +709,7 @@ def run_rotation_backtest(params: dict) -> dict:
                     "^CNXCONSUM": "Consumer Durables"}
 
     # Pre-compute RRG coordinates for all sectors relative to Nifty index
-    nifty_closes = np.array([float(r[3]) for r in nifty])
+    nifty_closes = n_closes
     n_dates_arr = np.array(n_dates)
     
     for ticker, td in list(ticker_data.items()):
