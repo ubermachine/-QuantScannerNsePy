@@ -213,39 +213,42 @@ def _batch_load_all(min_bars: int = 200, lookback: int = 250) -> dict:
     Tickers with fewer than min_bars are excluded.
     """
     con = _conn()
-    rows = con.execute("""
+    data = con.execute("""
         SELECT Ticker, Date, Close, High, Low, Volume FROM (
             SELECT *, ROW_NUMBER() OVER (PARTITION BY Ticker ORDER BY Date DESC) as rn
             FROM DailyBars
         ) sub WHERE rn <= ?
         ORDER BY Ticker, Date
-    """, [lookback]).fetchall()
+    """, [lookback]).fetchnumpy()
     con.close()
 
-    # Organize rows by ticker
-    raw: dict[str, list] = {}
-    for row in rows:
-        t = row[0]
-        if t not in raw:
-            raw[t] = {'dates': [], 'closes': [], 'highs': [], 'lows': [], 'vols': []}
-        raw[t]['dates'].append(row[1])
-        raw[t]['closes'].append(row[2])
-        raw[t]['highs'].append(row[3])
-        raw[t]['lows'].append(row[4])
-        raw[t]['vols'].append(row[5])
+    tickers = data['Ticker']
+    if len(tickers) == 0:
+        return {}
 
-    # Convert to numpy arrays, filter by min_bars
+    # Find boundaries between tickers
+    splits = np.where(tickers[:-1] != tickers[1:])[0] + 1
+
+    # Split all arrays
+    ticker_groups = np.split(tickers, splits)
+    dates_groups = np.split(pd.to_datetime(data['Date']).to_pydatetime(), splits)
+    closes_groups = np.split(data['Close'].astype(float), splits)
+    highs_groups = np.split(data['High'].astype(float), splits)
+    lows_groups = np.split(data['Low'].astype(float), splits)
+    vols_groups = np.split(data['Volume'].astype(float), splits)
+
     result = {}
-    for t, d in raw.items():
-        n = len(d['closes'])
+    for i, t_arr in enumerate(ticker_groups):
+        t = str(t_arr[0])
+        n = len(t_arr)
         if n < min_bars:
             continue
         result[t] = (
-            np.array(d['closes'], dtype=float),
-            np.array(d['highs'], dtype=float),
-            np.array(d['lows'], dtype=float),
-            np.array(d['vols'], dtype=float),
-            np.array(d['dates']),
+            closes_groups[i],
+            highs_groups[i],
+            lows_groups[i],
+            vols_groups[i],
+            dates_groups[i],
         )
     return result
 
