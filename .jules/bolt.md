@@ -1,0 +1,3 @@
+## 2026-09-20 - DuckDB fetchnumpy() performance vs fetchall()
+**Learning:** Using DuckDB's `fetchnumpy()` to retrieve data and using vectorized `np.split` with `np.where` boundary detection significantly reduces overhead compared to extracting rows with `fetchall()` and allocating lists manually in Python loops. The resulting array views are also highly efficient. Note that `fetchnumpy()` returns dates as `numpy.datetime64`, so fallback conversions (e.g. `pd.to_datetime().to_pydatetime()`) may be needed if downstream functions expect native Python datetime attributes like `.year`.
+**Action:** Default to `fetchnumpy()` for bulk tabular extractions across groupings in Python.
